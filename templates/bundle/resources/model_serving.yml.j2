@@ -1,0 +1,31 @@
+resources:
+  model_serving_endpoints:
+    {{ project_name }}_endpoint:
+      name: {{ project_name }}-${bundle.target}
+      # Governance-by-default (§9.1): route optimization can only be enabled at
+      # endpoint creation — never retrofittable — so it must be right on first deploy.
+      route_optimized: {{ 'true' if route_optimized else 'false' }}
+      config:
+        served_entities:
+          - name: champion
+            entity_name: ${var.catalog}.ml.{{ project_name }}
+            entity_version: "{{ champion_version }}"
+        traffic_config:
+          routes:
+            - served_model_name: champion
+              traffic_percentage: 100
+{% if inference_capture %}
+      ai_gateway:
+        inference_table_config:
+          enabled: true
+          catalog_name: ${var.catalog}
+          schema_name: monitoring
+          table_name_prefix: inference_log
+{% endif %}
+      tags:
+        - key: project_id
+          value: {{ project_name }}
+        - key: team
+          value: {{ team_name }}
+        - key: managed_by
+          value: mlops_control_plane

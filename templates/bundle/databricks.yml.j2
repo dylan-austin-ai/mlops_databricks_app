@@ -1,0 +1,38 @@
+bundle:
+  name: {{ project_name }}
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Environment-scoped catalog for this project (catalog-per-environment pattern)
+    default: {{ team_name }}_{{ project_name }}_dev
+
+permissions:
+  - level: CAN_MANAGE
+    user_name: {{ owner_email }}
+
+targets:
+  dev:
+    default: true
+    workspace:
+      host: {{ workspace_host }}
+    variables:
+      catalog: {{ team_name }}_{{ project_name }}_dev
+
+  staging:
+    workspace:
+      host: {{ workspace_host }}
+    variables:
+      catalog: {{ team_name }}_{{ project_name }}_staging
+
+  prod:
+    mode: production
+    workspace:
+      host: {{ workspace_host }}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      user_name: {{ owner_email }}
+    variables:
+      catalog: {{ team_name }}_{{ project_name }}_prod

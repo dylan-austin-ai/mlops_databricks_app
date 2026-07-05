@@ -1,0 +1,87 @@
+resources:
+  jobs:
+    {{ project_name }}_training:
+      name: "[${bundle.target}] {{ project_name }} — training"
+      tasks:
+        - task_key: train
+          spark_python_task:
+            python_file: ../src/train.py
+            parameters: ["--catalog", "${var.catalog}", "--model-name", "{{ project_name }}"]
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+      tags:
+        project_id: {{ project_name }}
+        team: {{ team_name }}
+        managed_by: mlops_control_plane
+{% if retraining_cron %}
+
+    {{ project_name }}_retraining:
+      name: "[${bundle.target}] {{ project_name }} — scheduled retraining"
+      schedule:
+        quartz_cron_expression: "{{ retraining_cron }}"
+        timezone_id: UTC
+        pause_status: "{{ 'UNPAUSED' if target_default_unpaused else 'PAUSED' }}"
+      tasks:
+        - task_key: retrain
+          spark_python_task:
+            python_file: ../src/train.py
+            parameters: ["--catalog", "${var.catalog}", "--model-name", "{{ project_name }}", "--retrain"]
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+      tags:
+        project_id: {{ project_name }}
+        team: {{ team_name }}
+        managed_by: mlops_control_plane
+{% endif %}
+{% if batch_cron %}
+
+    {{ project_name }}_batch_scoring:
+      name: "[${bundle.target}] {{ project_name }} — batch scoring"
+      schedule:
+        quartz_cron_expression: "{{ batch_cron }}"
+        timezone_id: UTC
+        pause_status: "{{ 'UNPAUSED' if target_default_unpaused else 'PAUSED' }}"
+      tasks:
+        - task_key: score
+          spark_python_task:
+            python_file: ../src/batch_score.py
+            parameters: ["--catalog", "${var.catalog}", "--model-name", "{{ project_name }}"]
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+      tags:
+        project_id: {{ project_name }}
+        team: {{ team_name }}
+        managed_by: mlops_control_plane
+{% endif %}
+{% if streaming %}
+
+    {{ project_name }}_streaming_scorer:
+      name: "[${bundle.target}] {{ project_name }} — streaming scorer"
+      # `continuous` is a top-level job field, mutually exclusive with `schedule`
+      # (verified against CLI v{{ cli_version }} bundle schema)
+      continuous:
+        pause_status: UNPAUSED
+      tasks:
+        - task_key: score_stream
+          spark_python_task:
+            python_file: ../src/stream_score.py
+            parameters: ["--catalog", "${var.catalog}", "--model-name", "{{ project_name }}", "--source-table", "{{ streaming_source_table }}"]
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+      tags:
+        project_id: {{ project_name }}
+        team: {{ team_name }}
+        managed_by: mlops_control_plane
+{% endif %}

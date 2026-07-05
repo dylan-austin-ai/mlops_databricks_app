@@ -1,0 +1,36 @@
+"""Training entry point for {{ project_name }} — generated scaffold.
+
+Replace the body of `train()` with real feature engineering and model training.
+The scaffold handles the MLOps plumbing: MLflow autologging, UC registry
+registration, and catalog-scoped output so dev/staging/prod stay isolated.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+
+def train(catalog: str, model_name: str, retrain: bool = False) -> None:
+    import mlflow
+
+    mlflow.set_registry_uri("databricks-uc")
+    uc_model = f"{catalog}.ml.{model_name}"
+
+    with mlflow.start_run():
+        mlflow.set_tag("project_id", model_name)
+        mlflow.set_tag("run_type", "retrain" if retrain else "train")
+        # TODO(data-scientist): load training data from {catalog}, train, and log
+        # the model with registered_model_name=uc_model. Example:
+        #   mlflow.sklearn.log_model(model, "model", registered_model_name=uc_model)
+        raise NotImplementedError(
+            f"Training logic not implemented yet. Register the model as {uc_model}."
+        )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalog", required=True)
+    parser.add_argument("--model-name", required=True)
+    parser.add_argument("--retrain", action="store_true")
+    args = parser.parse_args()
+    train(args.catalog, args.model_name, args.retrain)

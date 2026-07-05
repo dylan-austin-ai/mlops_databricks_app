@@ -1,0 +1,33 @@
+"""Batch scoring entry point for {{ project_name }} — generated scaffold.
+
+Loads the champion model from the UC registry and scores the declared input
+table, writing predictions to a Delta table in the same environment catalog.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+
+def score(catalog: str, model_name: str) -> None:
+    import mlflow
+
+    mlflow.set_registry_uri("databricks-uc")
+    uc_model = f"{catalog}.ml.{model_name}"
+    model_uri = f"models:/{uc_model}@champion"
+
+    # TODO(data-scientist): replace with the contracted input table and real
+    # feature assembly. Example:
+    #   model = mlflow.pyfunc.load_model(model_uri)
+    #   df = spark.table(f"{catalog}.ml.scoring_input")
+    #   preds = model.predict(df.toPandas())
+    #   spark.createDataFrame(preds).write.mode("append").saveAsTable(...)
+    raise NotImplementedError(f"Batch scoring not implemented yet. Model: {model_uri}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalog", required=True)
+    parser.add_argument("--model-name", required=True)
+    args = parser.parse_args()
+    score(args.catalog, args.model_name)
