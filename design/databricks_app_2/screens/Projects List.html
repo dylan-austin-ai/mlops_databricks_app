@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Projects List — MLOps Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../css/tokens.css" />
+<link rel="stylesheet" href="../css/components.css" />
+<link rel="stylesheet" href="../css/app-shell.css" />
+<style>
+  /* page-local: layout toggle for the cards-vs-table comparison */
+  .seg { display:inline-flex; padding:3px; gap:2px; background: var(--bg-deep);
+         border:1px solid var(--border-bright); border-radius: var(--r-sm); }
+  .seg button { font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-semi);
+         color: var(--text-muted); background:none; border:none; cursor:pointer;
+         padding: 6px 12px; border-radius: var(--r-xs); display:flex; align-items:center; gap:6px; }
+  .seg button.on { color: var(--accent-text); background: var(--accent-10); box-shadow: var(--glow-accent-sm); }
+  .cmp-note { font-size: var(--fs-xs); color: var(--text-dim); font-family: var(--font-mono); }
+
+  /* project card */
+  .proj-grid { display:grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-4); }
+  .proj { display:flex; flex-direction:column; gap: var(--sp-4); }
+  .proj .p-top { display:flex; align-items:flex-start; justify-content:space-between; gap: var(--sp-3); }
+  .proj .p-name { font-size: var(--fs-h3); font-weight: var(--fw-semi); color:#f4f8ff; }
+  .proj .p-desc { font-size: var(--fs-sm); color: var(--text-muted); line-height: var(--lh-snug);
+         display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .proj .p-meta { display:flex; flex-wrap:wrap; gap: var(--sp-2) var(--sp-5); }
+  .proj .p-meta .mi { display:flex; flex-direction:column; gap:3px; }
+  .proj .p-meta .mi .k { font-size:9px; text-transform:uppercase; letter-spacing:.12em; color: var(--text-dim); font-weight: var(--fw-semi); }
+  .proj .p-meta .mi .v { font-size: var(--fs-xs); color: var(--text-soft); font-family: var(--font-mono); }
+  .proj .p-foot { display:flex; align-items:center; gap: var(--sp-2); margin-top: auto;
+         padding-top: var(--sp-3); border-top:1px solid var(--border); }
+  /* left stage rail on card */
+  .proj.stage-prod    { border-left: 2px solid var(--success); }
+  .proj.stage-staging { border-left: 2px solid var(--warning); }
+  .proj.stage-dev     { border-left: 2px solid var(--accent); }
+</style>
+</head>
+<body class="mc-canvas mc">
+<div class="shell">
+
+  <!-- ============================= SIDEBAR ============================= -->
+  <aside class="rail">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <rect x="6.7" y="0.8" width="4.6" height="4.6" rx="1" transform="rotate(45 9 3.1)" fill="#00d4ff"/>
+          <rect x="1.2" y="12" width="3.4" height="3.4" rx="1" fill="#0891b2"/>
+          <rect x="13.4" y="12" width="3.4" height="3.4" rx="1" fill="#0891b2"/>
+          <path d="M9 5.4V9M9 9L3 13M9 9l6 4" stroke="#5ce6ff" stroke-width="1.1" stroke-linecap="round"/>
+          <circle cx="9" cy="9" r="1.5" fill="#5ce6ff"/>
+        </svg>
+      </div>
+      <div class="brand-name">
+        <span class="n">MLOps</span>
+        <span class="s">Command Center</span>
+      </div>
+    </div>
+
+    <div class="rail-label label">Workspace</div>
+    <nav class="nav">
+      <a class="nav-item"><span class="ico">⌂</span> Home</a>
+      <a class="nav-item active"><span class="ico">▦</span> Projects</a>
+      <a class="nav-item"><span class="ico">＋</span> New Project</a>
+      <a class="nav-item"><span class="ico">✓</span> Approval Center</a>
+      <a class="nav-item"><span class="ico">∿</span> Monitoring</a>
+      <a class="nav-item"><span class="ico">▤</span> Data Contracts</a>
+    </nav>
+
+    <div class="rail-label label" style="margin-top:var(--sp-4)">Admin</div>
+    <nav class="nav">
+      <a class="nav-item"><span class="ico">⚙</span> Settings <span class="admin-tag">Admin</span></a>
+    </nav>
+
+    <div class="rail-foot">
+      <div class="conn ok">
+        <span class="c-dot"></span>
+        <span class="c-text">
+          <span class="t">Databricks connected</span>
+          <span class="m">e2-demo.cloud · uc:mlops</span>
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================= MAIN ============================= -->
+  <div class="main">
+    <div class="topbar">
+      <div class="crumbs"><span>workspace</span><span class="sep">/</span><span class="cur">projects</span></div>
+      <div class="topbar-actions">
+        <span class="caption mono">7 projects</span>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="page-head">
+        <div class="titles">
+          <span class="eyebrow">Model Registry</span>
+          <h1 class="h1">Projects</h1>
+          <span class="sub">Every model across dev, staging, and production.</span>
+        </div>
+        <button class="btn btn-primary">＋ New Project</button>
+      </div>
+
+      <!-- filter bar + layout toggle -->
+      <div class="filterbar">
+        <div class="search">
+          <span class="s-ico">⌕</span>
+          <input class="input" placeholder="Search projects, owners, teams…" />
+        </div>
+        <select class="select" style="width:170px">
+          <option>All statuses</option>
+          <option>Production</option>
+          <option>Staging</option>
+          <option>Development</option>
+        </select>
+        <select class="select" style="width:150px">
+          <option>All teams</option>
+          <option>Fraud &amp; Risk</option>
+          <option>Growth</option>
+          <option>Platform</option>
+        </select>
+        <div class="spacer"></div>
+        <span class="cmp-note">comparison view →</span>
+        <div class="seg" id="seg">
+          <button class="on" data-view="cards">▦ Cards</button>
+          <button data-view="table">≡ Table</button>
+        </div>
+      </div>
+
+      <!-- ===================== OPTION A — CARDS ===================== -->
+      <section id="view-cards">
+        <div class="proj-grid">
+
+          <article class="card card-hover proj stage-prod">
+            <div class="p-top">
+              <div>
+                <div class="p-name">fraud-scoring-rt</div>
+              </div>
+              <span class="pill pill-prod"><span class="dot"></span>Production</span>
+            </div>
+            <p class="p-desc">Real-time card-transaction fraud scoring. XGBoost ensemble served at &lt;40ms p95 across 3 regions.</p>
+            <div class="p-meta">
+              <div class="mi"><span class="k">Owner</span><span class="v">a.okafor@acme.io</span></div>
+              <div class="mi"><span class="k">Team</span><span class="v">Fraud &amp; Risk</span></div>
+              <div class="mi"><span class="k">Updated</span><span class="v">2h ago</span></div>
+            </div>
+            <div class="p-foot">
+              <button class="btn btn-secondary btn-sm">Open →</button>
+              <button class="btn btn-link btn-sm btn-icon" title="GitHub">⎇</button>
+              <div class="spacer"></div>
+              <span class="path"><span class="seg-dim">uc:</span>mlops.fraud_scoring_rt</span>
+            </div>
+          </article>
+
+          <article class="card card-hover proj stage-staging">
+            <div class="p-top">
+              <div class="p-name">churn-propensity-v3</div>
+              <span class="pill pill-staging"><span class="dot"></span>Staging</span>
+            </div>
+            <p class="p-desc">Quarterly batch churn propensity for enterprise accounts. Pending fairness sign-off before promotion.</p>
+            <div class="p-meta">
+              <div class="mi"><span class="k">Owner</span><span class="v">l.medeiros@acme.io</span></div>
+              <div class="mi"><span class="k">Team</span><span class="v">Growth</span></div>
+              <div class="mi"><span class="k">Updated</span><span class="v">1d ago</span></div>
+            </div>
+            <div class="p-foot">
+              <button class="btn btn-secondary btn-sm">Open →</button>
+              <button class="btn btn-link btn-sm btn-icon" title="GitHub">⎇</button>
+              <div class="spacer"></div>
+              <span class="path"><span class="seg-dim">uc:</span>mlops.churn_v3_staging</span>
+            </div>
+          </article>
+
+          <article class="card card-hover proj stage-dev">
+            <div class="p-top">
+              <div class="p-name">ltv-forecast</div>
+              <span class="pill pill-dev"><span class="dot"></span>Development</span>
+            </div>
+            <p class="p-desc">90-day customer lifetime-value forecast. Feature engineering in progress; no deployment target yet.</p>
+            <div class="p-meta">
+              <div class="mi"><span class="k">Owner</span><span class="v">s.nakamura@acme.io</span></div>
+              <div class="mi"><span class="k">Team</span><span class="v">Growth</span></div>
+              <div class="mi"><span class="k">Updated</span><span class="v">3d ago</span></div>
+            </div>
+            <div class="p-foot">
+              <button class="btn btn-secondary btn-sm">Open →</button>
+              <div class="spacer"></div>
+              <span class="path"><span class="seg-dim">uc:</span>mlops.ltv_forecast_dev</span>
+            </div>
+          </article>
+
+          <article class="card card-hover proj stage-prod">
+            <div class="p-top">
+              <div class="p-name">doc-classifier</div>
+              <span class="pill pill-prod"><span class="dot"></span>Production</span>
+            </div>
+            <p class="p-desc">Batch document classification for KYC intake. DistilBERT fine-tune, nightly scoring of 1.2M docs.</p>
+            <div class="p-meta">
+              <div class="mi"><span class="k">Owner</span><span class="v">r.haddad@acme.io</span></div>
+              <div class="mi"><span class="k">Team</span><span class="v">Platform</span></div>
+              <div class="mi"><span class="k">Updated</span><span class="v">5h ago</span></div>
+            </div>
+            <div class="p-foot">
+              <button class="btn btn-secondary btn-sm">Open →</button>
+              <button class="btn btn-link btn-sm btn-icon" title="GitHub">⎇</button>
+              <div class="spacer"></div>
+              <span class="path"><span class="seg-dim">uc:</span>mlops.doc_classifier</span>
+            </div>
+          </article>
+
+        </div>
+      </section>
+
+      <!-- ===================== OPTION B — TABLE ===================== -->
+      <section id="view-table" hidden>
+        <div class="card" style="padding:0; overflow:hidden">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Status</th>
+                <th>Owner</th>
+                <th>Team</th>
+                <th>UC Path</th>
+                <th class="num">Updated</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="t-primary">fraud-scoring-rt</td>
+                <td><span class="pill pill-prod"><span class="dot"></span>Prod</span></td>
+                <td class="mono">a.okafor@acme.io</td>
+                <td>Fraud &amp; Risk</td>
+                <td><span class="path"><span class="seg-dim">uc:</span>mlops.fraud_scoring_rt</span></td>
+                <td class="num">2h ago</td>
+                <td><button class="btn btn-secondary btn-sm">Open →</button></td>
+              </tr>
+              <tr>
+                <td class="t-primary">churn-propensity-v3</td>
+                <td><span class="pill pill-staging"><span class="dot"></span>Staging</span></td>
+                <td class="mono">l.medeiros@acme.io</td>
+                <td>Growth</td>
+                <td><span class="path"><span class="seg-dim">uc:</span>mlops.churn_v3_staging</span></td>
+                <td class="num">1d ago</td>
+                <td><button class="btn btn-secondary btn-sm">Open →</button></td>
+              </tr>
+              <tr>
+                <td class="t-primary">ltv-forecast</td>
+                <td><span class="pill pill-dev"><span class="dot"></span>Dev</span></td>
+                <td class="mono">s.nakamura@acme.io</td>
+                <td>Growth</td>
+                <td><span class="path"><span class="seg-dim">uc:</span>mlops.ltv_forecast_dev</span></td>
+                <td class="num">3d ago</td>
+                <td><button class="btn btn-secondary btn-sm">Open →</button></td>
+              </tr>
+              <tr>
+                <td class="t-primary">doc-classifier</td>
+                <td><span class="pill pill-prod"><span class="dot"></span>Prod</span></td>
+                <td class="mono">r.haddad@acme.io</td>
+                <td>Platform</td>
+                <td><span class="path"><span class="seg-dim">uc:</span>mlops.doc_classifier</span></td>
+                <td class="num">5h ago</td>
+                <td><button class="btn btn-secondary btn-sm">Open →</button></td>
+              </tr>
+              <tr>
+                <td class="t-primary">recsys-homepage</td>
+                <td><span class="pill pill-staging"><span class="dot"></span>Staging</span></td>
+                <td class="mono">d.flores@acme.io</td>
+                <td>Growth</td>
+                <td><span class="path"><span class="seg-dim">uc:</span>mlops.recsys_home_staging</span></td>
+                <td class="num">6h ago</td>
+                <td><button class="btn btn-secondary btn-sm">Open →</button></td>
+              </tr>
+              <tr>
+                <td class="t-primary">credit-limit-opt</td>
+                <td><span class="pill pill-dev"><span class="dot"></span>Dev</span></td>
+                <td class="mono">a.okafor@acme.io</td>
+                <td>Fraud &amp; Risk</td>
+                <td><span class="path"><span class="seg-dim">uc:</span>mlops.credit_limit_dev</span></td>
+                <td class="num">2d ago</td>
+                <td><button class="btn btn-secondary btn-sm">Open →</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="cmp-note" style="margin-top:var(--sp-3)">Dense table — better at 12+ projects; fits more rows per screen, scannable status column.</p>
+      </section>
+
+      <!-- ===================== EMPTY STATE (reference) ===================== -->
+      <details style="margin-top:var(--sp-2)">
+        <summary class="caption" style="cursor:pointer">▸ Empty state (no projects)</summary>
+        <div class="empty" style="margin-top:var(--sp-3)">
+          <div class="empty-ico">▦</div>
+          <div class="empty-title">No projects yet</div>
+          <div class="empty-sub">Create your first ML project to start tracking models through dev, staging, and production.</div>
+          <button class="btn btn-primary" style="margin-top:var(--sp-2)">＋ New Project</button>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const seg = document.getElementById('seg');
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    const v = b.dataset.view;
+    document.getElementById('view-cards').hidden = v !== 'cards';
+    document.getElementById('view-table').hidden = v !== 'table';
+  });
+</script>
+</body>
+</html>

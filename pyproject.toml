@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlops-databricks-app"
+version = "0.1.0"
+description = "Interview-driven Databricks MLOps platform — Streamlit UI over databricks-mlops toolkit"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+dependencies = [
+    # Core UI
+    "streamlit>=1.35.0",
+    "plotly>=5.22.0",
+    # Databricks (shared with toolkit)
+    "databricks-sdk>=0.20.0",
+    "mlflow>=2.10.0",
+    # Data handling
+    "pandas>=2.1.0",
+    "pyarrow>=15.0.0",
+    # Config & validation
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    # GitHub repo creation
+    "PyGithub>=2.3.0",
+    # Toolkit (editable install — points to sibling directory)
+    "databricks-mlops",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "services*", "db*", "pages*", "components*"]
+
+[tool.ruff]
+line-length = 120
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.black]
+line-length = 120
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -q"

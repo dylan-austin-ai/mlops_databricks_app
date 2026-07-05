@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Monitoring — MLOps Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../css/tokens.css" />
+<link rel="stylesheet" href="../css/components.css" />
+<link rel="stylesheet" href="../css/app-shell.css" />
+<style>
+  .chart-card { display:flex; flex-direction:column; gap: var(--sp-4); }
+  .chart-card .c-head { display:flex; align-items:center; justify-content:space-between; }
+  .chart-card .c-title { font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--text); }
+  .chart-card .c-val { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--accent-text); }
+  .chart { width:100%; height:220px; display:block; }
+  /* plotly-equivalent styling reference is in index/design-system page */
+  .grid-line { stroke: var(--border); stroke-width:1; }
+  .axis-txt { fill: var(--text-dim); font-family: var(--font-mono); font-size:10px; }
+  .proj-pick { display:flex; flex-direction:column; gap: var(--sp-2); padding: var(--sp-4);
+        background: var(--surface); border:1px solid var(--border); border-radius: var(--r-md); }
+</style>
+</head>
+<body class="mc-canvas mc">
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <rect x="6.7" y="0.8" width="4.6" height="4.6" rx="1" transform="rotate(45 9 3.1)" fill="#00d4ff"/>
+          <rect x="1.2" y="12" width="3.4" height="3.4" rx="1" fill="#0891b2"/>
+          <rect x="13.4" y="12" width="3.4" height="3.4" rx="1" fill="#0891b2"/>
+          <path d="M9 5.4V9M9 9L3 13M9 9l6 4" stroke="#5ce6ff" stroke-width="1.1" stroke-linecap="round"/>
+          <circle cx="9" cy="9" r="1.5" fill="#5ce6ff"/>
+        </svg>
+      </div>
+      <div class="brand-name"><span class="n">MLOps</span><span class="s">Command Center</span></div>
+    </div>
+    <div class="rail-label label">Workspace</div>
+    <nav class="nav">
+      <a class="nav-item"><span class="ico">⌂</span> Home</a>
+      <a class="nav-item"><span class="ico">▦</span> Projects</a>
+      <a class="nav-item"><span class="ico">＋</span> New Project</a>
+      <a class="nav-item"><span class="ico">✓</span> Approval Center</a>
+      <a class="nav-item active"><span class="ico">∿</span> Monitoring</a>
+      <a class="nav-item"><span class="ico">▤</span> Data Contracts</a>
+    </nav>
+    <div class="rail-label label" style="margin-top:var(--sp-4)">Monitoring scope</div>
+    <div class="proj-pick">
+      <span class="label">Project</span>
+      <select class="select"><option>fraud-scoring-rt</option><option>doc-classifier</option></select>
+      <span class="caption mono">prod · 3 regions</span>
+    </div>
+    <div class="rail-foot">
+      <div class="conn ok"><span class="c-dot"></span>
+        <span class="c-text"><span class="t">Databricks connected</span><span class="m">e2-demo.cloud · uc:mlops</span></span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="crumbs"><span>monitoring</span><span class="sep">/</span><span class="cur">fraud-scoring-rt</span></div>
+      <div class="topbar-actions">
+        <span class="pill pill-prod"><span class="dot"></span>Production</span>
+        <span class="caption mono">live · updated 30s ago</span>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="page-head">
+        <div class="titles">
+          <span class="eyebrow">Runtime Health</span>
+          <h1 class="h1">Monitoring</h1>
+          <span class="sub">Live model performance for <span class="mono" style="color:var(--text-soft)">fraud-scoring-rt</span>.</span>
+        </div>
+        <button class="btn btn-secondary">⤓ Export window</button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab" aria-selected="true">Performance</button>
+        <button class="tab">Data Drift</button>
+        <button class="tab">Alerts</button>
+        <button class="tab">Fairness</button>
+      </div>
+
+      <!-- metric row -->
+      <div class="grid-4">
+        <div class="metric metric-accent">
+          <span class="metric-label">Accuracy</span>
+          <span class="metric-value">94.2%</span>
+          <span class="metric-foot"><span class="delta delta-up">▲ 0.4</span> vs. 7d</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">AUC-ROC</span>
+          <span class="metric-value">0.971</span>
+          <span class="metric-foot"><span class="delta delta-up">▲ 0.003</span> vs. 7d</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Error rate</span>
+          <span class="metric-value">1.8%</span>
+          <span class="metric-foot"><span class="delta delta-down">▼ 0.2</span> vs. 7d</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">P95 latency</span>
+          <span class="metric-value">38<span style="font-size:16px;color:var(--text-muted)">ms</span></span>
+          <span class="metric-foot"><span class="delta delta-flat">— 0</span> vs. 7d</span>
+        </div>
+      </div>
+
+      <!-- charts -->
+      <div class="grid-2">
+        <div class="card chart-card">
+          <div class="c-head">
+            <span class="c-title">Accuracy over time</span>
+            <span class="c-val">30-day window</span>
+          </div>
+          <svg class="chart" viewBox="0 0 560 220" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="fill1" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.28"/>
+                <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+              </linearGradient>
+              <filter id="glow1"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            <!-- gridlines -->
+            <line class="grid-line" x1="40" y1="30"  x2="552" y2="30"/>
+            <line class="grid-line" x1="40" y1="80"  x2="552" y2="80"/>
+            <line class="grid-line" x1="40" y1="130" x2="552" y2="130"/>
+            <line class="grid-line" x1="40" y1="180" x2="552" y2="180"/>
+            <text class="axis-txt" x="6" y="34">96%</text>
+            <text class="axis-txt" x="6" y="84">94%</text>
+            <text class="axis-txt" x="6" y="134">92%</text>
+            <text class="axis-txt" x="6" y="184">90%</text>
+            <!-- area + line -->
+            <path d="M40,118 L104,108 L168,124 L232,96 L296,104 L360,82 L424,90 L488,74 L552,80 L552,200 L40,200 Z" fill="url(#fill1)"/>
+            <path d="M40,118 L104,108 L168,124 L232,96 L296,104 L360,82 L424,90 L488,74 L552,80"
+                  fill="none" stroke="#00d4ff" stroke-width="2" filter="url(#glow1)" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="552" cy="80" r="3.5" fill="#5ce6ff"/>
+            <text class="axis-txt" x="40" y="214">May 5</text>
+            <text class="axis-txt" x="500" y="214">Jun 4</text>
+          </svg>
+        </div>
+
+        <div class="card chart-card">
+          <div class="c-head">
+            <span class="c-title">Error rate over time</span>
+            <span class="c-val">threshold 3.0%</span>
+          </div>
+          <svg class="chart" viewBox="0 0 560 220" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="fill2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.22"/>
+                <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+              </linearGradient>
+              <filter id="glow2"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            <line class="grid-line" x1="40" y1="30"  x2="552" y2="30"/>
+            <line class="grid-line" x1="40" y1="80"  x2="552" y2="80"/>
+            <line class="grid-line" x1="40" y1="130" x2="552" y2="130"/>
+            <line class="grid-line" x1="40" y1="180" x2="552" y2="180"/>
+            <!-- threshold line (amber, dashed) -->
+            <line x1="40" y1="62" x2="552" y2="62" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.8"/>
+            <text class="axis-txt" x="500" y="58" fill="#fcd34d">3.0%</text>
+            <path d="M40,150 L104,144 L168,156 L232,138 L296,148 L360,132 L424,142 L488,150 L552,146 L552,200 L40,200 Z" fill="url(#fill2)"/>
+            <path d="M40,150 L104,144 L168,156 L232,138 L296,148 L360,132 L424,142 L488,150 L552,146"
+                  fill="none" stroke="#00d4ff" stroke-width="2" filter="url(#glow2)" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="552" cy="146" r="3.5" fill="#5ce6ff"/>
+            <text class="axis-txt" x="40" y="214">May 5</text>
+            <text class="axis-txt" x="500" y="214">Jun 4</text>
+          </svg>
+        </div>
+      </div>
+
+      <div class="alert alert-success" style="max-width:none">
+        <span class="alert-ico">✓</span>
+        <span>All performance metrics within SLO. No drift or threshold breach in the last 30 days.</span>
+      </div>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>

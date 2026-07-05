@@ -1,0 +1,151 @@
+/* ============================================================================
+   MLOps COMMAND CENTER — DESIGN TOKENS
+   Single source of truth. Implement these as CSS custom properties.
+   In Streamlit: inject this block once via st.markdown(<style>...</style>).
+   ============================================================================ */
+
+:root {
+  /* ---- CORE SURFACES ---------------------------------------------------- */
+  --bg:            #0b0f1a;  /* app canvas */
+  --bg-deep:       #070a12;  /* deepest wells, behind cards */
+  --surface:       #111827;  /* cards, panels */
+  --surface-2:     #161f33;  /* elevated / hover surface */
+  --surface-3:     #1b2640;  /* active row, popovers */
+  --sidebar:       #0d1117;  /* left rail */
+
+  /* ---- BORDERS / LINES -------------------------------------------------- */
+  --border:        #1a2740;  /* default hairline */
+  --border-bright: #243456;  /* hover / focus hairline */
+  --border-strong: #2f4368;  /* emphasized dividers */
+
+  /* ---- TEXT ------------------------------------------------------------- */
+  --text:          #e2e8f0;  /* primary */
+  --text-soft:     #a9b6cc;  /* secondary body */
+  --text-muted:    #64748b;  /* captions, labels */
+  --text-dim:      #46546e;  /* disabled, ghost */
+
+  /* ---- ACCENT (electric cyan) ------------------------------------------ */
+  --accent:        #00d4ff;
+  --accent-bright: #5ce6ff;  /* hover */
+  --accent-deep:   #0891b2;  /* pressed */
+  --accent-15:     rgba(0, 212, 255, 0.15);  /* tint fills */
+  --accent-10:     rgba(0, 212, 255, 0.10);
+  --accent-25:     rgba(0, 212, 255, 0.25);  /* borders on tint */
+  --accent-text:   #7de8ff;  /* accent text on dark, AA-safe */
+
+  /* ---- STATUS ----------------------------------------------------------- */
+  --success:       #10b981;
+  --success-15:    rgba(16, 185, 129, 0.15);
+  --success-text:  #5eead4;
+  --warning:       #f59e0b;
+  --warning-15:    rgba(245, 158, 11, 0.15);
+  --warning-text:  #fcd34d;
+  --error:         #ef4444;
+  --error-15:      rgba(239, 68, 68, 0.15);
+  --error-text:    #fca5a5;
+  --info:          #818cf8;
+  --info-15:       rgba(129, 140, 248, 0.15);
+  --info-text:     #c7d2fe;
+
+  /* Lifecycle (project stage) — semantic aliases */
+  --stage-prod:    var(--success);   /* production  = green  */
+  --stage-staging: var(--warning);   /* staging     = amber  */
+  --stage-dev:     var(--accent);    /* development = cyan   */
+  --stage-archived:var(--text-muted);/* archived    = grey   */
+
+  /* Severity ramp (drift / alerts): none→critical */
+  --sev-none:      #475569;
+  --sev-low:       #10b981;
+  --sev-medium:    #f59e0b;
+  --sev-high:      #fb7185;
+  --sev-critical:  #ef4444;
+
+  /* PII ramp: none→high */
+  --pii-none:      #475569;
+  --pii-low:       #10b981;
+  --pii-medium:    #f59e0b;
+  --pii-high:      #ef4444;
+
+  /* ---- GLOW (heavy / mission-control) ---------------------------------- */
+  --glow-accent:   0 0 0 1px var(--accent-25), 0 0 18px rgba(0, 212, 255, 0.35);
+  --glow-accent-sm:0 0 12px rgba(0, 212, 255, 0.30);
+  --glow-success:  0 0 14px rgba(16, 185, 129, 0.45);
+  --glow-warning:  0 0 14px rgba(245, 158, 11, 0.45);
+  --glow-error:    0 0 14px rgba(239, 68, 68, 0.45);
+
+  /* ---- ELEVATION SHADOWS ----------------------------------------------- */
+  --shadow-sm:     0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-md:     0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg:     0 12px 40px rgba(0, 0, 0, 0.55);
+  --shadow-pop:    0 8px 28px rgba(0, 0, 0, 0.65);
+
+  /* ---- TYPOGRAPHY ------------------------------------------------------- */
+  --font-ui:   'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', monospace;
+
+  /* Type scale (1.200 minor-third-ish, tuned for dense UI) */
+  --fs-display: 30px;  /* page H1 */
+  --fs-h2:      22px;
+  --fs-h3:      17px;
+  --fs-body:    14px;
+  --fs-sm:      13px;
+  --fs-xs:      12px;
+  --fs-micro:   11px;  /* uppercase labels */
+  --fs-data:    13px;  /* tabular mono data */
+
+  --lh-tight:   1.15;
+  --lh-snug:    1.35;
+  --lh-body:    1.55;
+
+  --fw-regular: 400;
+  --fw-medium:  500;
+  --fw-semi:    600;
+  --fw-bold:    700;
+
+  --ls-label:   0.12em;   /* uppercase input/metric labels */
+  --ls-tight:   -0.01em;  /* large headings */
+
+  /* ---- SPACING (4px base) ---------------------------------------------- */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* ---- RADIUS ----------------------------------------------------------- */
+  --r-xs:  3px;
+  --r-sm:  5px;
+  --r-md:  8px;
+  --r-lg:  12px;
+  --r-pill:999px;
+
+  /* ---- MOTION ----------------------------------------------------------- */
+  --ease:      cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast:  120ms;
+  --dur:       180ms;
+  --dur-slow:  280ms;
+
+  /* ---- LAYOUT ----------------------------------------------------------- */
+  --rail-w:    248px;   /* sidebar width */
+  --content-max: 1200px;
+}
+
+/* Subtle mission-control grid + vignette, applied to the app canvas.
+   Apply .mc-canvas to the outermost full-bleed wrapper. */
+.mc-canvas {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1200px 600px at 70% -10%, rgba(0, 212, 255, 0.06), transparent 60%),
+    radial-gradient(900px 500px at -5% 110%, rgba(129, 140, 248, 0.05), transparent 55%),
+    linear-gradient(rgba(26, 39, 64, 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26, 39, 64, 0.35) 1px, transparent 1px);
+  background-size: auto, auto, 48px 48px, 48px 48px;
+  background-position: center, center, center, center;
+  color: var(--text);
+  font-family: var(--font-ui);
+}

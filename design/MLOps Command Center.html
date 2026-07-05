@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MLOps Command Center — Design System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/tokens.css" />
+<link rel="stylesheet" href="css/components.css" />
+<link rel="stylesheet" href="css/app-shell.css" />
+<style>
+  .ds { max-width: 1100px; margin: 0 auto; padding: var(--sp-12) var(--sp-8) var(--sp-16);
+        display:flex; flex-direction:column; gap: var(--sp-12); }
+  .ds-hero { display:flex; flex-direction:column; gap: var(--sp-4); padding-bottom: var(--sp-8);
+        border-bottom:1px solid var(--border); }
+  .ds-hero .brand-mark { width:52px; height:52px; }
+  .ds-hero .brand-mark svg { width:28px; height:28px; }
+  .sec { display:flex; flex-direction:column; gap: var(--sp-5); }
+  .sec-head { display:flex; align-items:baseline; gap: var(--sp-3); }
+  .sec-head .no { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--accent-text); }
+
+  .swatches { display:grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-3); }
+  .sw { border:1px solid var(--border); border-radius: var(--r-md); overflow:hidden; background: var(--surface); }
+  .sw .chip { display:block; width:100%; height:64px; padding:0; border-bottom:1px solid var(--border); border-radius:0; }
+  .sw .meta { padding: var(--sp-3); display:flex; flex-direction:column; gap:3px; }
+  .sw .meta .nm { font-size: var(--fs-xs); color: var(--text); font-weight: var(--fw-semi); }
+  .sw .meta .hex { font-size: var(--fs-micro); color: var(--text-muted); font-family: var(--font-mono); }
+
+  .type-row { display:flex; align-items:baseline; gap: var(--sp-5); padding: var(--sp-3) 0;
+        border-bottom:1px solid var(--border); }
+  .type-row .tk { width:120px; flex:none; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); }
+
+  .gallery { display:grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-4); }
+  .demo { background: var(--surface); border:1px solid var(--border); border-radius: var(--r-md);
+        padding: var(--sp-5); display:flex; flex-direction:column; gap: var(--sp-4); }
+  .demo > .label { color: var(--text-dim); }
+  .demo .row { flex-wrap:wrap; align-items:center; }
+
+  pre.code { margin:0; background: var(--bg-deep); border:1px solid var(--border-bright);
+        border-radius: var(--r-md); padding: var(--sp-5); overflow:auto;
+        font-family: var(--font-mono); font-size: var(--fs-xs); line-height:1.65; color:#c5d4ec; }
+  pre.code .k { color:#7de8ff; } pre.code .s { color:#5eead4; } pre.code .c { color: var(--text-dim); }
+
+  .screens-grid { display:grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-4); }
+  .screen-link { display:flex; flex-direction:column; gap: var(--sp-3); padding: var(--sp-5);
+        background: var(--surface); border:1px solid var(--border); border-radius: var(--r-md);
+        text-decoration:none; color: var(--text); transition: all var(--dur) var(--ease); }
+  .screen-link:hover { border-color: var(--accent-25); box-shadow: var(--glow-accent-sm); transform: translateY(-2px); }
+  .screen-link .sl-no { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--accent-text); }
+  .screen-link .sl-t { font-size: var(--fs-h3); font-weight: var(--fw-semi); }
+  .screen-link .sl-s { font-size: var(--fs-sm); color: var(--text-muted); }
+  .files { display:flex; flex-direction:column; gap: var(--sp-2); }
+  .file-row { display:flex; align-items:center; gap: var(--sp-3); padding: var(--sp-3);
+        background: var(--bg-deep); border:1px solid var(--border); border-radius: var(--r-sm); font-family: var(--font-mono); font-size: var(--fs-xs); }
+  .file-row .fp { color: var(--accent-text); } .file-row .fd { color: var(--text-muted); margin-left:auto; }
+</style>
+</head>
+<body class="mc-canvas mc">
+<div class="ds">
+
+  <!-- HERO -->
+  <header class="ds-hero">
+    <div class="row" style="align-items:center; gap:var(--sp-4)">
+      <div class="brand-mark">
+        <svg viewBox="0 0 18 18" fill="none">
+          <rect x="6.7" y="0.8" width="4.6" height="4.6" rx="1" transform="rotate(45 9 3.1)" fill="#00d4ff"/>
+          <rect x="1.2" y="12" width="3.4" height="3.4" rx="1" fill="#0891b2"/>
+          <rect x="13.4" y="12" width="3.4" height="3.4" rx="1" fill="#0891b2"/>
+          <path d="M9 5.4V9M9 9L3 13M9 9l6 4" stroke="#5ce6ff" stroke-width="1.1" stroke-linecap="round"/>
+          <circle cx="9" cy="9" r="1.5" fill="#5ce6ff"/>
+        </svg>
+      </div>
+      <div class="stack" style="gap:4px">
+        <span class="eyebrow">Design System · v1</span>
+        <h1 class="h1">MLOps Command Center</h1>
+      </div>
+    </div>
+    <p class="sub" style="max-width:680px; color:var(--text-soft); font-size:var(--fs-body)">
+      A dark, high-density mission-control system for the Databricks MLOps control plane. Everything below is
+      implementable as CSS-injected tokens + classes — no layout restructuring required. Hand this folder to
+      Claude Code; start from <span class="path"><span class="seg-dim"></span>css/tokens.css</span>.
+    </p>
+    <div class="row wrap" style="gap:var(--sp-2)">
+      <span class="pill pill-dev"><span class="dot"></span>Dark</span>
+      <span class="tag tag-input">grid-safe</span>
+      <span class="tag tag-feature">CSS-override</span>
+      <span class="gate">Inter · JetBrains Mono</span>
+    </div>
+  </header>
+
+  <!-- 01 COLOR -->
+  <section class="sec">
+    <div class="sec-head"><span class="no">01</span><h2 class="h2">Color tokens</h2></div>
+    <div class="stack" style="gap:var(--sp-2)">
+      <span class="label">Surfaces</span>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#0b0f1a"></div><div class="meta"><span class="nm">--bg</span><span class="hex">#0b0f1a</span></div></div>
+        <div class="sw"><div class="chip" style="background:#070a12"></div><div class="meta"><span class="nm">--bg-deep</span><span class="hex">#070a12</span></div></div>
+        <div class="sw"><div class="chip" style="background:#111827"></div><div class="meta"><span class="nm">--surface</span><span class="hex">#111827</span></div></div>
+        <div class="sw"><div class="chip" style="background:#0d1117"></div><div class="meta"><span class="nm">--sidebar</span><span class="hex">#0d1117</span></div></div>
+      </div>
+    </div>
+    <div class="stack" style="gap:var(--sp-2)">
+      <span class="label">Accent &amp; status</span>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#00d4ff; box-shadow:var(--glow-accent-sm) inset"></div><div class="meta"><span class="nm">--accent</span><span class="hex">#00d4ff</span></div></div>
+        <div class="sw"><div class="chip" style="background:#10b981"></div><div class="meta"><span class="nm">--success</span><span class="hex">#10b981</span></div></div>
+        <div class="sw"><div class="chip" style="background:#f59e0b"></div><div class="meta"><span class="nm">--warning</span><span class="hex">#f59e0b</span></div></div>
+        <div class="sw"><div class="chip" style="background:#ef4444"></div><div class="meta"><span class="nm">--error</span><span class="hex">#ef4444</span></div></div>
+      </div>
+    </div>
+    <div class="stack" style="gap:var(--sp-2)">
+      <span class="label">Text &amp; lines</span>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#e2e8f0"></div><div class="meta"><span class="nm">--text</span><span class="hex">#e2e8f0</span></div></div>
+        <div class="sw"><div class="chip" style="background:#64748b"></div><div class="meta"><span class="nm">--text-muted</span><span class="hex">#64748b</span></div></div>
+        <div class="sw"><div class="chip" style="background:#1a2740"></div><div class="meta"><span class="nm">--border</span><span class="hex">#1a2740</span></div></div>
+        <div class="sw"><div class="chip" style="background:#243456"></div><div class="meta"><span class="nm">--border-bright</span><span class="hex">#243456</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 TYPE -->
+  <section class="sec">
+    <div class="sec-head"><span class="no">02</span><h2 class="h2">Typography</h2></div>
+    <div class="card" style="padding:var(--sp-2) var(--sp-5)">
+      <div class="type-row"><span class="tk">display / 30 / 700</span><span class="h1">Promotion gates</span></div>
+      <div class="type-row"><span class="tk">h2 / 22 / 600</span><span class="h2">Approval Center</span></div>
+      <div class="type-row"><span class="tk">h3 / 17 / 600</span><span class="h3">Model specifications</span></div>
+      <div class="type-row"><span class="tk">body / 14 / 400</span><span style="font-size:var(--fs-body)">Real-time card-transaction fraud scoring.</span></div>
+      <div class="type-row"><span class="tk">label / 11 / 600</span><span class="label">Owner email</span></div>
+      <div class="type-row"><span class="tk">mono / 13</span><span class="mono" style="color:var(--accent-text)">uc:mlops.fraud_scoring_rt</span></div>
+    </div>
+  </section>
+
+  <!-- 03 COMPONENTS -->
+  <section class="sec">
+    <div class="sec-head"><span class="no">03</span><h2 class="h2">Components</h2></div>
+    <div class="gallery">
+      <div class="demo"><span class="label">Buttons</span>
+        <div class="row"><button class="btn btn-primary">Primary</button><button class="btn btn-secondary">Secondary</button><button class="btn btn-ghost">Ghost</button></div>
+        <div class="row"><button class="btn btn-ai">✨ Suggest with LLM</button><button class="btn btn-link">⎇ GitHub</button></div>
+      </div>
+      <div class="demo"><span class="label">Decision buttons (always colored)</span>
+        <div class="row"><button class="btn btn-approve">✓ Approve</button><button class="btn btn-changes">⟲ Changes</button><button class="btn btn-reject">✕ Reject</button></div>
+      </div>
+      <div class="demo"><span class="label">Lifecycle pills</span>
+        <div class="row"><span class="pill pill-prod"><span class="dot"></span>Production</span><span class="pill pill-staging"><span class="dot"></span>Staging</span><span class="pill pill-dev"><span class="dot"></span>Development</span><span class="pill pill-archived"><span class="dot"></span>Archived</span></div>
+      </div>
+      <div class="demo"><span class="label">Severity ramp</span>
+        <div class="row"><span class="sev sev-none">None</span><span class="sev sev-low">Low</span><span class="sev sev-medium">Medium</span><span class="sev sev-high">High</span><span class="sev sev-critical">Critical</span></div>
+      </div>
+      <div class="demo"><span class="label">PII levels</span>
+        <div class="row"><span class="pii pii-none">None</span><span class="pii pii-low">Low</span><span class="pii pii-medium">Medium</span><span class="pii pii-high">High</span></div>
+      </div>
+      <div class="demo"><span class="label">Contract type tags</span>
+        <div class="row"><span class="tag tag-input">input_data</span><span class="tag tag-output">output_data</span><span class="tag tag-feature">feature_table</span><span class="tag tag-staging">staging_table</span></div>
+      </div>
+      <div class="demo"><span class="label">Metric card</span>
+        <div class="metric metric-accent"><span class="metric-label">Accuracy</span><span class="metric-value">94.2%</span><span class="metric-foot"><span class="delta delta-up">▲ 0.4</span> vs. 7d</span></div>
+      </div>
+      <div class="demo"><span class="label">Form controls</span>
+        <div class="field"><label>Owner email</label><input class="input mono" value="a.okafor@acme.io" /></div>
+        <div class="row" style="align-items:center; gap:var(--sp-5)">
+          <label class="check"><input type="checkbox" checked /> Shadow mode</label>
+          <span class="toggle on"></span>
+          <span class="chip">parity <span class="x">✕</span></span>
+        </div>
+        <input class="slider" type="range" value="65" style="--val:65%" />
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 PLOTLY THEME -->
+  <section class="sec">
+    <div class="sec-head"><span class="no">04</span><h2 class="h2">Plotly dark theme</h2></div>
+    <p class="sub" style="color:var(--text-muted)">Drop this <span class="mono" style="color:var(--accent-text)">layout</span> dict into every <span class="mono" style="color:var(--accent-text)">fig.update_layout(**MC_PLOTLY)</span>. Cyan-led monochrome; amber reserved for threshold lines only.</p>
+<pre class="code"><span class="c"># mc_plotly.py — shared chart theme</span>
+MC_PLOTLY = dict(
+  paper_bgcolor=<span class="s">"#111827"</span>, plot_bgcolor=<span class="s">"#0b0f1a"</span>,
+  font=dict(family=<span class="s">"JetBrains Mono, monospace"</span>, size=<span class="k">11</span>, color=<span class="s">"#64748b"</span>),
+  colorway=[<span class="s">"#00d4ff"</span>, <span class="s">"#5ce6ff"</span>, <span class="s">"#0891b2"</span>, <span class="s">"#7de8ff"</span>],  <span class="c"># cyan monochrome</span>
+  margin=dict(l=<span class="k">48</span>, r=<span class="k">16</span>, t=<span class="k">16</span>, b=<span class="k">32</span>),
+  xaxis=dict(gridcolor=<span class="s">"#1a2740"</span>, zerolinecolor=<span class="s">"#243456"</span>,
+             linecolor=<span class="s">"#243456"</span>, tickcolor=<span class="s">"#243456"</span>),
+  yaxis=dict(gridcolor=<span class="s">"#1a2740"</span>, zerolinecolor=<span class="s">"#243456"</span>,
+             linecolor=<span class="s">"#243456"</span>, tickcolor=<span class="s">"#243456"</span>),
+  hoverlabel=dict(bgcolor=<span class="s">"#161f33"</span>, bordercolor=<span class="s">"#00d4ff"</span>,
+                  font=dict(color=<span class="s">"#e2e8f0"</span>, family=<span class="s">"JetBrains Mono"</span>)),
+  legend=dict(bgcolor=<span class="s">"rgba(0,0,0,0)"</span>, font=dict(color=<span class="s">"#a9b6cc"</span>)),
+)
+<span class="c"># threshold lines: fig.add_hline(y=thr, line_dash="dash", line_color="#f59e0b")</span>
+<span class="c"># line traces: line=dict(width=2, color="#00d4ff"); fill="tozeroy", fillcolor="rgba(0,212,255,0.12)"</span></pre>
+  </section>
+
+  <!-- 05 SCREENS -->
+  <section class="sec">
+    <div class="sec-head"><span class="no">05</span><h2 class="h2">Key screen mockups</h2></div>
+    <div class="screens-grid">
+      <a class="screen-link" href="screens/Projects List.html">
+        <span class="sl-no">A</span><span class="sl-t">Projects List</span>
+        <span class="sl-s">Cards vs dense table — toggle to compare both layouts.</span>
+      </a>
+      <a class="screen-link" href="screens/New Project Wizard.html">
+        <span class="sl-no">B</span><span class="sl-t">New Project — Step 1</span>
+        <span class="sl-s">7-step interview, step rail, validation + org-standard markers.</span>
+      </a>
+      <a class="screen-link" href="screens/Approval Center.html">
+        <span class="sl-no">C</span><span class="sl-t">Approval Center</span>
+        <span class="sl-s">Colored decision buttons, approval chain, progress meter.</span>
+      </a>
+      <a class="screen-link" href="screens/Monitoring Dashboard.html">
+        <span class="sl-no">D</span><span class="sl-t">Monitoring — Performance</span>
+        <span class="sl-s">Metric row + cyan-monochrome charts with threshold line.</span>
+      </a>
+    </div>
+  </section>
+
+  <!-- 06 FILES -->
+  <section class="sec">
+    <div class="sec-head"><span class="no">06</span><h2 class="h2">Handoff files</h2></div>
+    <div class="files">
+      <div class="file-row"><span class="fp">css/tokens.css</span><span class="fd">colors · type · spacing · radius · shadow · glow</span></div>
+      <div class="file-row"><span class="fp">css/components.css</span><span class="fd">buttons · pills · metrics · forms · tabs · tables · alerts</span></div>
+      <div class="file-row"><span class="fp">css/app-shell.css</span><span class="fd">sidebar rail · topbar · grids · filter bar</span></div>
+      <div class="file-row"><span class="fp">screens/*.html</span><span class="fd">4 reference mockups using the classes above</span></div>
+    </div>
+    <div class="alert alert-info">
+      <span class="alert-ico">◈</span>
+      <span><strong>Streamlit note:</strong> inject <span class="mono">tokens.css</span> + <span class="mono">components.css</span> once via <span class="mono">st.markdown(&lt;style&gt;…&lt;/style&gt;, unsafe_allow_html=True)</span>. Map <span class="mono">st.metric</span>→<span class="mono">.metric</span>, <span class="mono">st.tabs</span>→<span class="mono">.tabs/.tab</span>, status badges→<span class="mono">.pill</span>. All classes are grid-safe (no absolute positioning).</span>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

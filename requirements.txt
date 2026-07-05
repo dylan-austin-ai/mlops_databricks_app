@@ -1,0 +1,19 @@
+# Uses the toolkit's venv (shared deps, avoids reinstalling databricks-connect etc.)
+# One-time setup:
+#   .venv/bin/python -m pip install -e ../mlops_toolkit
+#   .venv/bin/python -m pip install streamlit plotly PyGithub
+# Then run:
+#   cp .env.example .env  # fill in your workspace creds
+#   .venv/bin/python -m db.setup
+#   .venv/bin/streamlit run app.py
+
+streamlit>=1.35.0
+plotly>=5.22.0
+databricks-sdk>=0.20.0
+mlflow>=2.10.0
+pandas>=2.1.0
+pyarrow>=15.0.0
+pydantic>=2.0.0
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+PyGithub>=2.3.0
