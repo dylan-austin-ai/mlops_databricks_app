@@ -77,7 +77,59 @@ def run_setup(catalog: str | None = None, schema: str | None = None) -> None:
         except RuntimeError as exc:
             print(f"  [{i}/{len(statements)}] FAILED — {exc}")
 
+    run_migrations(ws, cfg.warehouse_id, catalog, schema)
+
     print("Schema setup complete.")
+
+
+def _fetch_applied_versions(ws: Any, warehouse_id: str, catalog: str, schema: str) -> set[int]:
+    from databricks.sdk.service.sql import StatementState
+
+    response = ws.statement_execution.execute_statement(
+        warehouse_id=warehouse_id,
+        statement=f"SELECT version FROM {catalog}.{schema}.schema_migrations",
+        wait_timeout="30s",
+    )
+    if response.status and response.status.state == StatementState.SUCCEEDED and response.result:
+        return {int(row[0]) for row in (response.result.data_array or [])}
+    return set()
+
+
+def run_migrations(ws: Any, warehouse_id: str, catalog: str, schema: str) -> None:
+    """Apply db/migrations/NNN_*.sql in order, tracked in schema_migrations (§21).
+
+    Each migration runs at most once; already-applied versions are skipped.
+    """
+    _exec_one(
+        ws,
+        warehouse_id,
+        f"""CREATE TABLE IF NOT EXISTS {catalog}.{schema}.schema_migrations (
+              version INT NOT NULL,
+              name STRING NOT NULL,
+              applied_timestamp TIMESTAMP NOT NULL,
+              CONSTRAINT pk_schema_migrations PRIMARY KEY (version)
+            ) COMMENT 'Applied numbered migrations — one row per db/migrations file'""",
+    )
+    applied = _fetch_applied_versions(ws, warehouse_id, catalog, schema)
+
+    migrations_dir = Path(__file__).parent / "migrations"
+    if not migrations_dir.exists():
+        return
+
+    for path in sorted(migrations_dir.glob("[0-9]*.sql")):
+        version = int(path.name.split("_", 1)[0])
+        if version in applied:
+            print(f"  migration {path.name}: already applied, skipping")
+            continue
+        rendered = path.read_text().replace("{catalog}", catalog).replace("{schema}", schema)
+        for stmt in (s.strip() for s in rendered.split(";") if s.strip()):
+            _exec_one(ws, warehouse_id, stmt)
+        _exec_one(
+            ws,
+            warehouse_id,
+            f"INSERT INTO {catalog}.{schema}.schema_migrations VALUES ({version}, '{path.stem}', current_timestamp())",
+        )
+        print(f"  migration {path.name}: applied")
 
 
 if __name__ == "__main__":
