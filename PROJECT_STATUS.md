@@ -1,6 +1,34 @@
 # MLOps Databricks App — Project Status
 
-**Last updated:** 2026-06-15
+**Last updated:** 2026-07-05
+
+---
+
+## Control-plane build (MLOPS_CONTROL_PLANE_DESIGN.md §27.1 MVP + Phase 5) — DONE 2026-07-05
+
+Built per the design doc, one commit per phase (`git log --oneline`):
+
+| Phase | What landed | Where |
+|-------|-------------|-------|
+| Week 0 | CLI v1.6.0 pinned + §29.1 schema verification: `route_optimized` top-level, `ai_gateway.inference_table_config` sub-fields confirmed live, `continuous` top-level | — |
+| Week 1 | Bundle Service: generate/validate/plan/deploy/verify/destroy, JSON plan flow, plan-hash tamper guard, unix→Quartz cron (dow renumbering found via live deploy) | `services/bundle_service.py`, `templates/bundle/` |
+| Week 2 | Registry Service: @champion/@challenger alias moves with §7.4 audit tags, rollback from tags, cross-catalog copy; tracked migrations runner | `services/registry_service.py`, `db/migrations/` |
+| Week 3 | Approval write-path as single conditional MERGE (replaces racy read-modify-write), Saga Engine with compensations, revocation with segregation of duties | `services/approval_service.py`, `services/saga_engine.py` |
+| Week 4 | Label feedback loop: prediction↔label MERGE join, live_accuracy, data-availability retrain trigger | `services/feedback_join_service.py` |
+| Phase 5 | Reconciliation Service (aliases + costs) with §21.1 self-monitoring | `services/reconciliation_service.py` |
+
+**157 tests passing** (was 82). Remaining §27.2 phases 6–16 (monitoring cutover,
+feature engineering/catalog, HITL+explainability, portfolio analytics, …) not started.
+
+**⚠ Live verification blocked:** the Databricks workspace org
+(7474651926930548) reports "cancelled or is not active" — resource creation
+403s and the SQL warehouse never starts. Auth/read/validate/plan/upload/destroy
+all verified working. Once the account is active, run:
+
+```bash
+python scripts/verify_live_roundtrip.py   # Week 1 round-trip proof
+python -m db.setup                        # applies migrations 001–006
+```
 
 ---
 
@@ -89,7 +117,7 @@ python3 -m pytest tests/
 1. **American English audit** — UI text not systematically reviewed; a few British spellings may remain.
 2. **Framework/protected-attribute dropdown top-alignment** — CSS fix needed for multiselect widgets rendered inside `st.columns`; they currently don't align to the top of their column when another column has more content.
 3. **`databricks_mlops` package** — `generator_service.py` imports `databricks_mlops.generation.project_generator` for scaffold generation. If that package isn't installed the scaffold step fails gracefully (status = "failed") but there is no built-in template fallback. Needs either a bundled Jinja2 template system or a pre-install check in settings.
-4. **Approval write path** — `03_approvals.py` shows pending approvals but there is no path to write an approval back to `.mlops/approval_record.json` or the Databricks state table from the app. This is the next logical workflow to build.
+4. ~~**Approval write path**~~ — closed 2026-07-05: concurrency-safe MERGE write-path in `services/approval_service.py`, wired into `03_approvals.py`. (Write-back to `.mlops/approval_record.json` via PR still pending — lands with the saga's CI/CD integration.)
 5. **Dashboard empty state** — `06_project_dashboard.py` drift and explainability tabs read from Databricks tables (`monitoring_baseline`, `monitoring_drift_log`) that only exist after a model has run. New projects show an error; needs a friendly empty state.
 6. **Column-level classification attestation storage** — attestations are stored in session state during the wizard but need to be persisted to the project config table on save.
 
