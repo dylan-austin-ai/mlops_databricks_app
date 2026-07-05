@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 
 import streamlit as st
 
@@ -69,7 +70,7 @@ def _approval_card(approval: dict, svc: object) -> None:
 </div>"""
 
     # Waiting slot
-    chain_html += f"""
+    chain_html += """
 <div style="display:flex;align-items:center;gap:12px;padding:10px;
             border-radius:5px;background:#070a12;border:1px dashed #1a2740;opacity:.7">
   <span style="width:28px;height:28px;flex:none;border-radius:50%;display:grid;
@@ -154,7 +155,13 @@ def _submit(svc: object, approval_id: str, decision: str, email: str, comment: s
         st.error("A comment is required for all decisions.", icon="❌")
         return
     try:
-        svc.submit_approval_decision(approval_id, decision, email, comment)
+        from services.approval_service import ApprovalService
+
+        outcome = ApprovalService(state=svc).submit_decision(approval_id, decision, email, comment)
+        if not outcome.recorded:
+            # Concurrency-safe refusal (§15.1): explain, never silently overwrite
+            st.warning(outcome.reason, icon="⚠️")
+            return
         label = {"approve": "approved", "reject": "rejected", "request_changes": "flagged for changes"}[decision]
         st.success(f"Decision recorded: {label}.", icon="✅")
         st.rerun()
@@ -215,10 +222,10 @@ def _ensure_placeholder_model(svc: object, project: dict) -> str:
     if rows:
         return rows[0]["model_id"]
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     model_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     svc._exec(f"""
     INSERT INTO {svc._tbl("models")}
       (model_id, project_id, model_name, status, is_production,
