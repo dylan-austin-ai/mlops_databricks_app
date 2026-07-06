@@ -17,8 +17,22 @@ Built per the design doc, one commit per phase (`git log --oneline`):
 | Week 4 | Label feedback loop: prediction↔label MERGE join, live_accuracy, data-availability retrain trigger | `services/feedback_join_service.py` |
 | Phase 5 | Reconciliation Service (aliases + costs) with §21.1 self-monitoring | `services/reconciliation_service.py` |
 
-**157 tests passing** (was 82). Remaining §27.2 phases 6–16 (monitoring cutover,
-feature engineering/catalog, HITL+explainability, portfolio analytics, …) not started.
+**Phases 6–9 also done (2026-07-05, same session):**
+
+| Phase | What landed | Where |
+|-------|-------------|-------|
+| 6 | Lakehouse Monitoring attach/label-upgrade/retire, §25 graceful degradation | `services/monitoring_service.py` |
+| 7 | Feature Catalog discovery + breakage-protected contract versioning (consumer acks fail closed) | `services/feature_contract_service.py`, `pages/08_feature_catalog.py` |
+| 8 | HITL review queue (decision-IS-NULL MERGE, SLA escalate-never-approve) + explainability sync/async resolver with structural demotion | `services/hitl_review_service.py`, `services/explainability_config.py`, `pages/09_hitl_review.py` |
+| 9 | Portfolio Analytics with §14.4 confidence-split impact rollups | `services/portfolio_analytics_service.py`, `pages/10_portfolio_analytics.py` |
+
+**214 tests passing** (was 82). Migrations 001–009 queued for `python -m db.setup`.
+
+Remaining §27.2 phases: 10 streaming (gated on a real governed source —
+DECISIONS_NEEDED #6), 11 policy packs + revalidation trigger, 12 network
+hardening, 13 capacity service + control-plane budget, 14 API layer,
+15 auth cutover to native Apps hosting, 16 interview optimizer/telemetry.
+See `DECISIONS_NEEDED.md` for owner decisions, several of which gate these.
 
 **⚠ Live verification blocked:** the Databricks workspace org
 (7474651926930548) reports "cancelled or is not active" — resource creation
