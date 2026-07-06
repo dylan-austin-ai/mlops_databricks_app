@@ -75,6 +75,7 @@ class RegistryService:
         approval_manifest_hash: str = "",
         fairness_test_result: str = "",
         promoted_from_alias: str = "",
+        extra_tags: dict[str, str] | None = None,
     ) -> AliasMove:
         """Point `alias` at `version`, writing the §7.4 audit tags on the version.
 
@@ -99,6 +100,8 @@ class RegistryService:
             tags["fairness_test_result"] = fairness_test_result
         if alias == CHAMPION and previous is not None:
             tags["previous_champion_version"] = str(previous)
+        if extra_tags:
+            tags.update(extra_tags)
 
         for key, value in tags.items():
             client.set_model_version_tag(name=uc_full_name, version=str(version), key=key, value=value)

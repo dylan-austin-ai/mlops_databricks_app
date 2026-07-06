@@ -11,14 +11,14 @@ import hashlib
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from config import AppConfig, get_config
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _uuid() -> str:
@@ -43,13 +43,19 @@ class StateService:
         return self._ws
 
     def _exec(self, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        """Execute a SQL statement and return rows as list-of-dicts."""
-        from databricks.sdk.service.sql import StatementState
+        """Execute a SQL statement and return rows as list-of-dicts.
+
+        `params` are passed as real named parameters (`:name` placeholders) —
+        never interpolate untrusted values into the SQL string.
+        """
+        from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
         ws = self._workspace()
+        parameters = [StatementParameterListItem(name=k, value=str(v)) for k, v in params.items()] if params else None
         response = ws.statement_execution.execute_statement(
             warehouse_id=self._cfg.warehouse_id,
             statement=sql,
+            parameters=parameters,
             wait_timeout="30s",
         )
 
@@ -351,7 +357,6 @@ class StateService:
         persona_json = json.dumps(config.get("personas", {})).replace("'", "\\'")
         monitoring_json = json.dumps(config.get("monitoring_defaults", {})).replace("'", "\\'")
         approval_json = json.dumps(config.get("approval_workflow_defaults", {})).replace("'", "\\'")
-        frameworks = json.dumps(config.get("compliance_frameworks", [])).replace("'", "\\'")
 
         self._exec(f"""
         INSERT INTO {self._tbl("installation_config")}
@@ -511,59 +516,9 @@ class StateService:
         LIMIT {limit}
         """)
 
-    def submit_approval_decision(
-        self,
-        approval_id: str,
-        decision: str,
-        approver_email: str,
-        comment: str = "",
-    ) -> None:
-        """Record one approver's decision. Sets status=approved/rejected when threshold met."""
-        now = _now()
-        comment_esc = comment.replace("'", "\\'")
-
-        # Fetch current state
-        rows = self._exec(f"SELECT * FROM {self._tbl('approvals')} WHERE approval_id = '{approval_id}'")
-        if not rows:
-            raise ValueError(f"Approval {approval_id} not found")
-        current = rows[0]
-
-        try:
-            responses = json.loads(current.get("approval_responses") or "[]")
-        except Exception:
-            responses = []
-
-        responses.append(
-            {
-                "approved_by": approver_email,
-                "approved_timestamp": now,
-                "approval_decision": decision,
-                "comment": comment,
-            }
-        )
-        responses_json = json.dumps(responses).replace("'", "\\'")
-
-        approved = sum(1 for r in responses if r["approval_decision"] == "approve")
-        rejected = sum(1 for r in responses if r["approval_decision"] == "reject")
-        required = int(current.get("required_count") or 1)
-
-        if rejected > 0:
-            new_status = "rejected"
-        elif approved >= required:
-            new_status = "approved"
-        else:
-            new_status = "pending"
-
-        completed_val = f"'{now}'" if new_status != "pending" else "NULL"
-        self._exec(f"""
-        UPDATE {self._tbl("approvals")}
-        SET approval_responses = '{responses_json}',
-            approved_count = {approved},
-            rejected_count = {rejected},
-            status = '{new_status}',
-            completed_timestamp = {completed_val}
-        WHERE approval_id = '{approval_id}'
-        """)
+    # Approval decision writes live in services/approval_service.py — a Delta
+    # conditional MERGE (§15.1). The previous read-modify-write here allowed two
+    # concurrent reviewers to silently clobber each other's votes.
 
     def get_approval(self, approval_id: str) -> dict[str, Any] | None:
         rows = self._exec(f"SELECT * FROM {self._tbl('approvals')} WHERE approval_id = '{approval_id}'")

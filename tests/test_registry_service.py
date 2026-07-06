@@ -37,6 +37,9 @@ class FakeMlflowClient:
     def set_registered_model_alias(self, name, alias, version):
         self.aliases.setdefault(name, {})[alias] = int(version)
 
+    def delete_registered_model_alias(self, name, alias):
+        self.aliases.get(name, {}).pop(alias, None)
+
     def set_model_version_tag(self, name, version, key, value):
         self.tags.setdefault((name, str(version)), {})[key] = value
 
