@@ -6,7 +6,14 @@ note it here (or just tell the build session) — several change code paths.
 
 ---
 
-## 1. Databricks workspace — reactivated 2026-07-07, but two new constraints ⚠️
+## 1. ~~Databricks workspace~~ — RESOLVED 2026-07-07 (second session)
+
+Serverless capacity freed up; warehouse verified RUNNING. Migrations 001–010
+applied, policy packs synced, and the Week 1 round-trip proof passed live.
+The Default Storage catalog constraint is handled by decision #2 below
+(schema-per-project + `MLOPS_MANAGED_LOCATION`). Historical detail follows.
+
+## 1-old. Databricks workspace — reactivated 2026-07-07, but two new constraints
 
 ~~The org returns "cancelled or is not active yet".~~ **Resolved:** as of
 2026-07-07 the workspace answers normally (auth, reads, listings, real errors
@@ -34,7 +41,17 @@ design's own tenet 8 says don't let that run long.
 
 ---
 
-## 2. Catalog naming convention — I made a call, you should ratify it
+## 2. ~~Catalog naming convention~~ — DECIDED by owner 2026-07-07
+
+**Decision:** all projects in the production workspace; one configurable
+catalog (`mlops`, via `MLOPS_PROJECTS_CATALOG`) with a distinct schema per
+project per environment (`{project}_{env}`); option B managed-location
+support for catalog creation (`MLOPS_MANAGED_LOCATION`). Implemented and
+round-trip-verified live the same day. Per-env catalog overrides
+(`MLOPS_PROJECTS_CATALOG_DEV/_STAGING/_PROD`) keep catalog-per-env at 100+
+projects a config change. Original discussion follows for the record.
+
+## 2-old. Catalog naming convention — I made a call, you should ratify it
 
 The design doc uses two conventions: §5.1/§9.1 use a catalog per
 project+environment (`retention_team_customer_churn_prediction_prod` with a
@@ -77,7 +94,14 @@ an endpoint-config update. Nothing to decide *before* the workspace is back.
 
 ---
 
-## 4. Wizard scaffold path — cut over to Bundle Service?
+## 4. Wizard scaffold path — APPROVED 2026-07-07: next build session
+
+Owner approved the cutover; scheduled as the next build session's main item
+(replace `_scaffold_code` internals with `BundleService.generate()` + the
+existing `.mlops/` files, keeping GitHub/UC/MLflow/secret-scope steps).
+Original context follows.
+
+## 4-old. Wizard scaffold path — cut over to Bundle Service?
 
 `services/generator_service.py` still scaffolds via the external
 `databricks_mlops` package (PROJECT_STATUS gap #3: no fallback if missing).
@@ -103,17 +127,20 @@ conversation has lead time. Relevant once >~20 real-time models are plausible.
 
 ## 6. Business/process items the app can't decide (later phases)
 
-- **De novo baseline (§26.4):** someone measures how long repo+schemas+endpoint
-  +monitoring takes by hand — the number Interview Speed is judged against.
+- **De novo baseline (§26.4):** owner set a **10-day placeholder** on
+  2026-07-07 (surfaced as PLACEHOLDER in Portfolio Analytics). Still worth a
+  real by-hand measurement eventually; replace `DE_NOVO_BASELINE_DAYS` and
+  its placeholder flag together in `portfolio_analytics_service.py`.
 - **Policy pack tiers (§20.3):** phase 11 landed 2026-07-07 — the mechanism is
   live and `policy_packs/generic_tiering.yaml` is the shipped placeholder.
   **Now actionable:** PR your real tiers/gates as YAML into `policy_packs/`
   (tier names and gate names are free-form data; `on_revalidation_due` must be
   warn / block_new_traffic / block_all_traffic).
-- **Canary window metrics (§15.2 step 5):** which metrics and thresholds gate
-  champion promotion. Until decided, the saga records the canary step as
-  *skipped* (never silently passed). Phase 6's monitoring service gives the
-  mechanism; the thresholds are a business call.
+- **Canary window metrics (§15.2 step 5):** DECIDED 2026-07-07 — defaults to
+  the wizard step-6 primary performance metric with its alert threshold as
+  the breach condition (`make_default_canary_check`). A project can still
+  inject a custom check; without config or monitoring rows the step stays
+  *skipped*, never silently passed.
 - **Streaming go/no-go (§29.2):** phase 10 starts only when a real governed
   source stream exists — synthetic sources deliberately don't count.
   (Checked 2026-07-07: the workspace contains only the control plane's own

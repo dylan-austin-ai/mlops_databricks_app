@@ -1,0 +1,37 @@
+# DRAFT — org policy pack template (2026-07-07). NOT LOADED: the loader only
+# reads *.yaml/*.yml, so this .example file is inert until you fill in the
+# TODOs and rename it (e.g. org_risk_v1.yaml), then PR it in (§20.3).
+#
+# Shape rules the loader enforces:
+#   - policy_pack_id, tier names, and gate names: [A-Za-z0-9_-]+ (free-form
+#     otherwise — gates are data, §28; a genai_eval gate needs no code change)
+#   - revalidation_frequency_days: positive int or null (null = no cadence)
+#   - on_revalidation_due: warn | block_new_traffic | block_all_traffic
+#   - allows_override: whether a project may proceed past a failed gate with
+#     a logged override
+#
+# The tier structure below is SR 11-7-flavored (materiality tiering) as a
+# starting point. TODO(owner): replace names, gates, and cadences with your
+# org's real framework before renaming.
+policy_pack_id: org_risk_v1
+name: "TODO: your org's model risk framework"
+tiers:
+  # TODO: high materiality — e.g. models influencing credit/capital/customer
+  # outcomes. Strictest gates, shortest revalidation, promotions blocked when due.
+  tier_1_high_materiality:
+    required_approval_gates: [code_review, legal_review, business_approval, security_review, independent_validation]
+    revalidation_frequency_days: 365
+    on_revalidation_due: block_new_traffic
+    allows_override: false
+  # TODO: moderate materiality — standard gate set.
+  tier_2_moderate:
+    required_approval_gates: [code_review, legal_review, business_approval]
+    revalidation_frequency_days: 365
+    on_revalidation_due: warn
+    allows_override: true
+  # TODO: low materiality / internal tooling — lighter gates, no cadence.
+  tier_3_internal:
+    required_approval_gates: [code_review, business_approval]
+    revalidation_frequency_days: null
+    on_revalidation_due: warn
+    allows_override: true

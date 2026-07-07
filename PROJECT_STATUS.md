@@ -1,6 +1,43 @@
 # MLOps Databricks App — Project Status
 
-**Last updated:** 2026-07-07
+**Last updated:** 2026-07-07 (second session)
+
+---
+
+## 2026-07-07 second session — live verification DONE, owner decisions executed
+
+**Live verification backlog cleared** (the workspace's serverless capacity
+freed up mid-day):
+
+- `python -m db.setup` — base schema + **migrations 001–010 applied** against
+  `mlops.mlops`. Found + fixed live: the migration runner split SQL on every
+  `;`, cutting statements mid-COMMENT-string (003/006/008 affected); splitter
+  is now quote/line-comment-aware.
+- **Policy packs synced live** to `mlops.policy_packs` (3 tier rows verified).
+  Found + fixed live: `StateService._exec` stringified every parameter, so
+  `None`/`True` arrived as literal `'None'`/`'True'` strings; params now bind
+  NULL and typed BOOLEAN/BIGINT/DOUBLE.
+- **Week 1 round-trip proof PASSED** end-to-end on the live workspace:
+  generate → validate → plan → deploy → verify (3 jobs + project schema via
+  SDK read-back) → destroy.
+
+**Owner decisions (2026-07-07) executed:**
+
+| Decision | What landed |
+|----------|-------------|
+| Schema-per-project in a configurable catalog (+ managed location, option B) | Templates emit `${var.catalog}.${var.schema}` with a declarative `schemas` resource; `MLOPS_PROJECTS_CATALOG` (+ per-env overrides) and `MLOPS_MANAGED_LOCATION` in config; db.setup passes MANAGED LOCATION when set |
+| Canary default = step-6 primary metric + alert threshold | `make_default_canary_check` in `saga_engine.py`; skips (never passes) without config or monitoring rows |
+| De novo baseline placeholder 10 days | `portfolio_analytics_service.py` + portfolio page, marked PLACEHOLDER (§26.4) |
+| Scaffold cutover to Bundle Service | **Approved — next build session** |
+| Org policy pack | `policy_packs/org_pack.yaml.example` drafted (inert until renamed); owner fills tiers/gates |
+
+**Gaps closed:** drift-tab empty state (raw SQL error suppressed on
+missing monitoring tables), American English audit (Organisation→Organization
+etc.), st.columns top-alignment CSS. Attestation persistence (old gap 6)
+verified already wired end-to-end — removed from the gap list.
+
+**258 tests passing.** Remaining §27.2 phases: 10 (still gated — no governed
+source), 12–16.
 
 ---
 
