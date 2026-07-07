@@ -33,7 +33,13 @@ class TestSpeedAndReliability:
         state.rows = [{"promotions": "4", "avg_approval_to_deploy_hours": "6.5"}]
         metrics = svc.speed_metrics(days_back=30)
 
-        assert metrics == {"promotions": 4, "avg_approval_to_deploy_hours": 6.5}
+        assert metrics == {
+            "promotions": 4,
+            "avg_approval_to_deploy_hours": 6.5,
+            # §26.4 denominator — placeholder until measured (decision 2026-07-07)
+            "de_novo_baseline_days": 10,
+            "de_novo_baseline_is_placeholder": True,
+        }
         sql, params = state.execs[0]
         # what got approved and what got deployed are tied by the plan artifact
         assert "d.plan_hash = a.plan_hash" in sql

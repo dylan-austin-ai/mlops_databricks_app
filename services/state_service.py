@@ -215,7 +215,7 @@ class StateService:
         config_id = _uuid()
         now = _now()
 
-        # Compute a deterministic manifest hash before serialising.
+        # Compute a deterministic manifest hash before serializing.
         # The hash identifies this exact wizard configuration for approver sign-off tracking.
         # Exclude any previously embedded hash to keep the hash stable across re-saves.
         clean_responses = {k: v for k, v in interview_responses.items() if k != "_manifest_hash"}

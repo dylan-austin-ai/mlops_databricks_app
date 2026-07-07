@@ -80,7 +80,7 @@ def _load_config(svc: object) -> dict:
 
 
 def _installation_tab(cfg_data: dict, svc: object, actor_email: str) -> None:
-    st.markdown("### Organisation Configuration")
+    st.markdown("### Organization Configuration")
     current_version = cfg_data.get("config_version", 0)
     if current_version:
         st.caption(f"Current version: **v{current_version}**")
@@ -88,7 +88,7 @@ def _installation_tab(cfg_data: dict, svc: object, actor_email: str) -> None:
     with st.form("installation_form"):
         c1, c2 = st.columns(2)
         with c1:
-            org_name = st.text_input("Organisation name *", value=cfg_data.get("org_name", ""), placeholder="Acme Corp")
+            org_name = st.text_input("Organization name *", value=cfg_data.get("org_name", ""), placeholder="Acme Corp")
             regulated_industry = st.selectbox(
                 "Regulated industry",
                 _INDUSTRIES,
@@ -120,14 +120,14 @@ def _installation_tab(cfg_data: dict, svc: object, actor_email: str) -> None:
                 else 0,
             )
             github_org = st.text_input(
-                "GitHub organisation", value=cfg_data.get("github_org", ""), placeholder="acme-mlops"
+                "GitHub organization", value=cfg_data.get("github_org", ""), placeholder="acme-mlops"
             )
 
         submitted = st.form_submit_button("💾 Save Installation Config", type="primary")
 
     if submitted:
         if not org_name:
-            st.error("Organisation name is required.", icon="❌")
+            st.error("Organization name is required.", icon="❌")
             return
         try:
             new_cfg = {
@@ -376,7 +376,7 @@ def _main() -> None:
     render_sidebar()
 
     st.markdown(
-        page_header("Platform Administration", "Settings", "Organisation configuration, personas, and defaults."),
+        page_header("Platform Administration", "Settings", "Organization configuration, personas, and defaults."),
         unsafe_allow_html=True,
     )
 
@@ -394,7 +394,7 @@ def _main() -> None:
         st.error(f"Failed to load settings: {exc}")
         return
 
-    actor_email = f"admin@workspace"
+    actor_email = "admin@workspace"
 
     if cfg_data:
         st.caption(

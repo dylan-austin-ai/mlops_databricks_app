@@ -22,6 +22,13 @@ from services.state_service import StateService
 
 VALUE_FN_REVIEW_MAX_AGE_DAYS = 365
 
+# §26.4: the de novo baseline — how long repo+schemas+endpoint+monitoring
+# takes by hand — is the denominator Interview Speed is judged against.
+# PLACEHOLDER: owner set 10 days on 2026-07-07 pending a real timed
+# measurement (DECISIONS_NEEDED #6); replace both values together.
+DE_NOVO_BASELINE_DAYS = 10
+DE_NOVO_BASELINE_IS_PLACEHOLDER = True
+
 
 @dataclass
 class ImpactRollup:
@@ -62,6 +69,8 @@ class PortfolioAnalyticsService:
                 if row.get("avg_approval_to_deploy_hours") is not None
                 else None
             ),
+            "de_novo_baseline_days": DE_NOVO_BASELINE_DAYS,
+            "de_novo_baseline_is_placeholder": DE_NOVO_BASELINE_IS_PLACEHOLDER,
         }
 
     # ── Reliability (§14.1): deploy failure + destroy rates ─────────────────

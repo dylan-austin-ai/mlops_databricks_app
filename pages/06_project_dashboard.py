@@ -72,9 +72,7 @@ def _overview_tab(project: dict, config: dict | None) -> None:
             ("Secret scope", project.get("secret_scope_name", "—")),
         ]
         for label, value in infra:
-            chip = (
-                path_chip(value) if value and value != "—" else '<span style="font-size:13px;color:#46546e">—</span>'
-            )
+            chip = path_chip(value) if value and value != "—" else '<span style="font-size:13px;color:#46546e">—</span>'
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;align-items:center;'
                 f'padding:8px 0;border-bottom:1px solid #1a2740">'
@@ -327,20 +325,20 @@ def _governance_tab(config: dict | None, project_id: str = "") -> None:
             )
             for col in required or ["All columns"]:
                 st.markdown(
-                    f"<div style=\"font-size:13px;color:#a9b6cc;"
+                    f'<div style="font-size:13px;color:#a9b6cc;'
                     f"font-family:'JetBrains Mono',monospace;padding:4px 0\">· {col}</div>",
                     unsafe_allow_html=True,
                 )
             if acceptable:
                 st.markdown(
                     '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
-                    'letter-spacing:.12em;color:#64748b;display:block;'
+                    "letter-spacing:.12em;color:#64748b;display:block;"
                     'padding-top:12px">Issues acceptable in</span>',
                     unsafe_allow_html=True,
                 )
                 for col in acceptable:
                     st.markdown(
-                        f"<div style=\"font-size:13px;color:#64748b;"
+                        f'<div style="font-size:13px;color:#64748b;'
                         f"font-family:'JetBrains Mono',monospace;padding:4px 0\">· {col}</div>",
                         unsafe_allow_html=True,
                     )
@@ -387,7 +385,10 @@ def _drift_tab(project: dict, config: dict | None) -> None:
             drift_data = db.get_field_drift_data(catalog, project_schema)
             baseline = db.get_baseline_stats(catalog, project_schema)
         except Exception as exc:
-            st.caption(f"Could not load monitoring data: {exc}")
+            # monitoring tables only exist after the first model run — fall
+            # through to the friendly empty state instead of a raw SQL error
+            if "NOT_FOUND" not in str(exc).upper():
+                st.caption(f"Could not load monitoring data: {exc}")
 
     if not drift_data and not baseline:
         # No data yet — show configuration and expected schema

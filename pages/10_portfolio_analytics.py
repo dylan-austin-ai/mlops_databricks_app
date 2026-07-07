@@ -36,6 +36,7 @@ def main() -> None:
         reuse = svc.reuse_metrics()
         impact = svc.business_impact_rollup()
         costs = svc.cost_rollup()
+        revalidation = svc.revalidation_metrics()
     except Exception as exc:
         st.error(f"Failed to load portfolio metrics: {exc}")
         return
@@ -61,6 +62,20 @@ def main() -> None:
             "Shared features reused",
             f"{reuse['multi_consumer_features']} / {reuse['shared_features']}",
             help="shared features with ≥2 consuming models (§8.5 lineage counts)",
+        )
+
+    baseline_note = " (PLACEHOLDER — unmeasured)" if speed["de_novo_baseline_is_placeholder"] else ""
+    st.caption(
+        f"Interview Speed is judged against a de novo by-hand baseline of "
+        f"{speed['de_novo_baseline_days']} days{baseline_note} (§26.4)."
+    )
+
+    if revalidation["governance_coverage_penalty"]:
+        st.warning(
+            f"Governance coverage penalty: {revalidation['revalidation_due']} model(s) revalidation-due, "
+            f"{revalidation['in_revalidation']} in re-review, "
+            f"{revalidation['promotion_blocked']} blocking promotion (§20.5).",
+            icon="⏰",
         )
 
     st.markdown("---")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
@@ -15,6 +16,25 @@ from services.saga_engine import (
 )
 from tests.test_approval_service import FakeState
 from tests.test_registry_service import FakeMlflowClient
+
+
+class PrefixFakeState(FakeState):
+    """FakeState with prefix-routed SELECT results (canary default queries)."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows_by_prefix: dict[str, list[dict]] = {}
+
+    def _exec(self, sql: str, params: dict | None = None):
+        self.execs.append((sql, params))
+        stripped = sql.strip()
+        for prefix, rows in self.rows_by_prefix.items():
+            if stripped.startswith(prefix):
+                return rows
+        if stripped.upper().startswith("MERGE"):
+            return [{"num_affected_rows": self.merge_affected}]
+        return []
+
 
 MODEL = "retention_churn_prod.ml.churn"
 
@@ -303,3 +323,74 @@ class TestModelCard:
         assert "a@co.com" in text
         assert "Fairness test result: pass" in text
         assert "`abc`" in text
+
+
+class TestDefaultCanaryCheck:
+    """Decision 2026-07-07: canary defaults to the step-6 primary metric with
+    its alert threshold as the breach condition."""
+
+    def _state_with(self, tmp_path, config_rows=None, perf_rows=None) -> PrefixFakeState:
+        state = PrefixFakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        if config_rows is not None:
+            state.rows_by_prefix["SELECT interview_responses"] = config_rows
+        if perf_rows is not None:
+            state.rows_by_prefix["SELECT max(CASE"] = perf_rows
+        return state
+
+    def _config_row(self, threshold=5.0) -> dict:
+        return {
+            "interview_responses": json.dumps({"performance_alert_threshold_pct": threshold}),
+            "alert_threshold_deviation_pct": None,
+        }
+
+    def test_healthy_candidate_promotes(self, cfg, tmp_path):
+        state = self._state_with(
+            tmp_path,
+            config_rows=[self._config_row(5.0)],
+            perf_rows=[{"degraded": 0, "worst_degradation_pct": 2.0, "n": 3}],
+        )
+        result = _run(_saga(cfg, state), tmp_path)
+
+        assert result.promoted is True
+        canary = next(s for s in result.steps if s.name == "canary_window")
+        assert canary.status == "ok"
+
+    def test_degradation_past_threshold_breaches_and_compensates(self, cfg, tmp_path):
+        state = self._state_with(
+            tmp_path,
+            config_rows=[self._config_row(5.0)],
+            perf_rows=[{"degraded": 0, "worst_degradation_pct": 7.5, "n": 3}],
+        )
+        client = FakeMlflowClient()
+        result = _run(_saga(cfg, state, client=client), tmp_path)
+
+        assert result.promoted is False
+        assert "challenger" not in client.aliases.get(MODEL, {})  # compensated
+        assert any(s.status == "compensated" for s in result.steps)
+
+    def test_no_monitoring_rows_skips_never_passes(self, cfg, tmp_path):
+        state = self._state_with(
+            tmp_path,
+            config_rows=[self._config_row(5.0)],
+            perf_rows=[{"degraded": None, "worst_degradation_pct": None, "n": 0}],
+        )
+        result = _run(_saga(cfg, state), tmp_path)
+
+        assert result.promoted is True
+        canary = next(s for s in result.steps if s.name == "canary_window")
+        assert canary.status == "skipped"
+
+    def test_no_config_skips(self, cfg, tmp_path):
+        state = self._state_with(tmp_path)  # no config rows at all
+        result = _run(_saga(cfg, state), tmp_path)
+
+        assert result.promoted is True
+        canary = next(s for s in result.steps if s.name == "canary_window")
+        assert canary.status == "skipped"
+
+    def test_explicit_canary_check_still_wins(self, cfg, tmp_path):
+        state = self._state_with(tmp_path, config_rows=[self._config_row(5.0)])
+        result = _run(_saga(cfg, state, canary=lambda _uc: False), tmp_path)
+
+        assert result.promoted is False

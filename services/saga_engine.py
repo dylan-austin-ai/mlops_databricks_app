@@ -77,11 +77,14 @@ class PromoteToProductionSaga:
         policy: PolicyPackService | None = None,
     ) -> None:
         """canary_check(uc_full_name) returns True (healthy), False (breach),
-        or None (no monitoring attached — logged as skipped, not passed)."""
+        or None (no monitoring attached — logged as skipped, not passed).
+        When omitted, the step-6 default applies (decision 2026-07-07): the
+        project's primary performance metric with its alert threshold as the
+        breach condition — see make_default_canary_check()."""
         self._state = state or StateService()
         self._bundles = bundles or BundleService()
         self._registry = registry or RegistryService()
-        self._canary_check = canary_check or (lambda _uc: None)
+        self._canary_check = canary_check
         self._policy = policy or PolicyPackService(state=self._state)
 
     def run(
@@ -163,7 +166,8 @@ class PromoteToProductionSaga:
                 raise SagaAborted("challenger alias failed — champion untouched") from exc
 
             # 5 — canary window
-            canary = self._canary_check(uc_full_name)
+            check = self._canary_check or make_default_canary_check(self._state, self._registry, project_id)
+            canary = check(uc_full_name)
             if canary is False:
                 self._compensate_challenger(uc_full_name, actor_email, result)
                 raise SagaAborted("canary threshold breach — promotion cancelled")
@@ -241,6 +245,60 @@ class PromoteToProductionSaga:
             result.add("set_challenger_canary", "compensated", "challenger alias removed")
         except Exception as exc:
             result.add("set_challenger_canary", "failed", f"compensation failed: {exc}")
+
+
+def make_default_canary_check(
+    state: StateService, registry: RegistryService, project_id: str
+) -> Callable[[str], bool | None]:
+    """Default canary gate (decision of record 2026-07-07): breach when the
+    challenger's primary performance metric — the one chosen in wizard step 6 —
+    degrades past that step's alert threshold. Missing config or no
+    monitoring rows yet returns None: skipped and logged, never silently
+    passed (§15.2)."""
+
+    def check(uc_full_name: str) -> bool | None:
+        rows = state._exec(
+            f"""SELECT interview_responses, alert_threshold_deviation_pct
+                FROM {state._tbl("project_configurations")}
+                WHERE project_id = :project_id
+                ORDER BY config_version DESC LIMIT 1""",
+            {"project_id": project_id},
+        )
+        if not rows:
+            return None
+        threshold: float | None = None
+        try:
+            responses = json.loads(str(rows[0].get("interview_responses") or "{}"))
+            raw = responses.get("performance_alert_threshold_pct")
+            threshold = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            threshold = None
+        if threshold is None and rows[0].get("alert_threshold_deviation_pct") is not None:
+            threshold = float(rows[0]["alert_threshold_deviation_pct"])
+        if threshold is None:
+            return None
+
+        challenger = registry.alias_version(uc_full_name, CHALLENGER)
+        if challenger is None:
+            return None
+
+        perf = state._exec(
+            f"""SELECT max(CASE WHEN p.performance_degraded THEN 1 ELSE 0 END) AS degraded,
+                       max(p.degradation_pct) AS worst_degradation_pct,
+                       count(*) AS n
+                FROM {state._tbl("model_performance")} p
+                JOIN {state._tbl("model_versions")} v ON v.version_id = p.version_id
+                WHERE v.uc_full_name = :uc_full_name AND v.uc_version = :version""",
+            {"uc_full_name": uc_full_name, "version": challenger},
+        )
+        row = perf[0] if perf else {}
+        if not int(row.get("n") or 0):
+            return None  # no monitoring rows for the candidate yet
+        degraded = int(row.get("degraded") or 0) == 1
+        worst = float(row.get("worst_degradation_pct") or 0.0)
+        return not (degraded or worst >= threshold)
+
+    return check
 
 
 def handle_approved_revocation(

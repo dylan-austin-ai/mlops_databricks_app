@@ -346,6 +346,11 @@ hr {
   border-radius: 2px;
 }
 
+/* ============================  COLUMNS  =========================== */
+/* Pin each column's content to the top so widgets in adjacent columns
+   align even when one column has more content (PROJECT_STATUS gap #2). */
+[data-testid="stColumn"], [data-testid="column"] { align-self: flex-start !important; }
+
 /* ============================  INPUTS  ============================ */
 .stTextInput > label, .stTextArea > label, .stNumberInput > label,
 .stSelectbox > label, .stMultiSelect > label, .stSlider > label,
@@ -518,7 +523,8 @@ _BADGE_BASE = (
 )
 
 _PILL_STYLES: dict[str, str] = {
-    "production": "color:#5eead4;background:rgba(16,185,129,0.15);border-color:rgba(16,185,129,0.40);box-shadow:0 0 14px rgba(16,185,129,0.45);",
+    "production": "color:#5eead4;background:rgba(16,185,129,0.15);"
+    "border-color:rgba(16,185,129,0.40);box-shadow:0 0 14px rgba(16,185,129,0.45);",
     "staging": "color:#fcd34d;background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.40);",
     "development": "color:#7de8ff;background:rgba(0,212,255,0.15);border-color:rgba(0,212,255,0.25);",
     "created": "color:#7de8ff;background:rgba(0,212,255,0.10);border-color:rgba(0,212,255,0.20);",
@@ -577,8 +583,8 @@ def pill(status: str, dot: bool = True) -> str:
     style = _PILL_STYLES.get(status.lower(), _PILL_STYLES["development"])
     label = status.replace("_", " ").title()
     d = (
-        f'<span style="width:6px;height:6px;border-radius:50%;'
-        f'background:currentColor;box-shadow:0 0 8px currentColor;flex:none;display:inline-block"></span>'
+        '<span style="width:6px;height:6px;border-radius:50%;'
+        'background:currentColor;box-shadow:0 0 8px currentColor;flex:none;display:inline-block"></span>'
         if dot
         else ""
     )
