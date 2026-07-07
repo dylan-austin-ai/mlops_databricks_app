@@ -6,20 +6,27 @@ note it here (or just tell the build session) — several change code paths.
 
 ---
 
-## 1. Databricks workspace is cancelled — blocks all live verification ⚠️
+## 1. Databricks workspace — reactivated 2026-07-07, but two new constraints ⚠️
 
-The org behind `dbc-7bed7f90-a25f.cloud.databricks.com` (org id
-`7474651926930548`) returns "cancelled or is not active yet". Resource creation
-403s; the serverless SQL warehouse never leaves PENDING. Auth, reads,
-`bundle validate/plan`, file uploads, and `bundle destroy` all work.
+~~The org returns "cancelled or is not active yet".~~ **Resolved:** as of
+2026-07-07 the workspace answers normally (auth, reads, listings, real errors
+on resource creation). Two follow-on issues, checked live:
 
-**Your options:** reactivate billing on this workspace · create a new
-workspace/account (update `.env`) · Databricks Free Edition (fine for
-verification; no route optimization or some Enterprise features).
-
-**Recommendation:** whichever is fastest — then run
-`python scripts/verify_live_roundtrip.py` and `python -m db.setup`
-(applies migrations 001–008).
+1. **Serverless capacity:** the `Serverless Starter Warehouse` fails to launch
+   with `RESOURCE_EXHAUSTED: Cannot create the resource, please try again
+   later` — retried for ~2 hours on 2026-07-07. Looks transient/platform-side,
+   but until a warehouse starts, `python -m db.setup` (migrations 001–010) and
+   `scripts/verify_live_roundtrip.py` stay blocked. Retry these first thing
+   next session; if it persists for days, it's a support-ticket item, not a
+   code problem.
+2. **Default Storage:** `CREATE CATALOG` via API/SQL now demands a
+   `MANAGED LOCATION` ("Default Storage is enabled in your account") — catalog
+   creation otherwise goes through the UI. This directly affects decision #2
+   below: the built `{team}_{project}_{env}` catalog-per-project convention
+   cannot be provisioned declaratively on this workspace as-is. Options:
+   pre-create catalogs in the UI, add a managed-location variable to the
+   bundle templates, or fall back to schemas inside the existing `mlops`
+   catalog (the wizard's original shape) for this workspace.
 
 **If nothing:** everything built since 2026-07-05 stays unverified against a
 real workspace, and each further phase stacks more unverified surface — the
@@ -98,14 +105,19 @@ conversation has lead time. Relevant once >~20 real-time models are plausible.
 
 - **De novo baseline (§26.4):** someone measures how long repo+schemas+endpoint
   +monitoring takes by hand — the number Interview Speed is judged against.
-- **Policy pack tiers (§20.3):** the shipped `generic_tiering` pack is a
-  placeholder; your org's real tiers/gates arrive as a PR when phase 11 lands.
+- **Policy pack tiers (§20.3):** phase 11 landed 2026-07-07 — the mechanism is
+  live and `policy_packs/generic_tiering.yaml` is the shipped placeholder.
+  **Now actionable:** PR your real tiers/gates as YAML into `policy_packs/`
+  (tier names and gate names are free-form data; `on_revalidation_due` must be
+  warn / block_new_traffic / block_all_traffic).
 - **Canary window metrics (§15.2 step 5):** which metrics and thresholds gate
   champion promotion. Until decided, the saga records the canary step as
   *skipped* (never silently passed). Phase 6's monitoring service gives the
   mechanism; the thresholds are a business call.
 - **Streaming go/no-go (§29.2):** phase 10 starts only when a real governed
   source stream exists — synthetic sources deliberately don't count.
+  (Checked 2026-07-07: the workspace contains only the control plane's own
+  tables — gate stays closed, build order skipped to phase 11.)
 - **Cost figures use list prices** (`system.billing.list_prices` default):
   ignores negotiated discounts. Fine for trends; decide whether absolute
   dollars matter enough to feed real rates in later.

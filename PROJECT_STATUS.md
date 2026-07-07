@@ -1,6 +1,42 @@
 # MLOps Databricks App — Project Status
 
-**Last updated:** 2026-07-05
+**Last updated:** 2026-07-07
+
+---
+
+## Phase 11 — Policy packs + risk tiering with revalidation trigger (§20) — DONE 2026-07-07
+
+| What landed | Where |
+|-------------|-------|
+| Pack YAML loader/validator + sync to `mlops.policy_packs` (one row per pack tier); shipped `generic_tiering_v1` default | `services/policy_pack_service.py`, `policy_packs/generic_tiering.yaml` |
+| Risk tier as a required, never-defaulted interview field with mandatory justification (§20.1/§29.3); wizard step 4 UI + assignment on project creation | `services/interview_service.py`, `pages/02_new_project.py` |
+| Saga step 1 takes the union of pack-required gates as data (§28) and aborts under a blocking revalidation flag | `services/saga_engine.py` |
+| §20.5 revalidation trigger as behavior, not a stub: reconciliation pass compares §7.4 `promoted_timestamp` tags against pack windows, clock resets on cleared re-reviews, unknown provenance fails closed | `services/reconciliation_service.py`, `db/migrations/010_policy_packs.sql` |
+| Revalidation = gate re-runs against the live version; flag clears only when every re-run gate approves | `services/policy_pack_service.py` |
+| Dashboard "revalidation due" banner + governance-coverage penalty rollup (§14.1) | `pages/06_project_dashboard.py`, `services/portfolio_analytics_service.py` |
+
+**241 tests passing** (was 214). Migration 010 queued behind 001–009.
+
+**Phase 10 (streaming) remains gated** — assessed 2026-07-07: no governed
+source stream/table exists in the workspace (only the control plane's own
+managed tables), and the decision of record (DECISIONS_NEEDED #6) forbids
+synthetic sources. Build order therefore skipped to phase 11 per §27.2's
+"sequenced, not scheduled".
+
+**Workspace status changed (2026-07-07):** the org is **no longer cancelled**
+— auth, reads, catalog/schema/table listings all work, and resource creation
+returns real errors instead of the old "cancelled or is not active" 403.
+Two new constraints found:
+1. **Serverless capacity:** the SQL warehouse fails to launch with
+   `RESOURCE_EXHAUSTED: Cannot create the resource, please try again later`
+   (retried for ~2h). Migrations (`python -m db.setup`, now 001–010) and
+   `scripts/verify_live_roundtrip.py` stay blocked until a warehouse starts.
+2. **Default Storage:** `CREATE CATALOG` via API/SQL requires a
+   `MANAGED LOCATION` on this workspace ("Default Storage is enabled in your
+   account"); catalog creation otherwise happens via the UI. Affects the
+   per-project catalog convention (DECISIONS_NEEDED #2) and any bundle
+   template that creates catalogs. The existing `mlops` catalog survived and
+   still holds the pre-migration base tables.
 
 ---
 
@@ -29,19 +65,19 @@ Built per the design doc, one commit per phase (`git log --oneline`):
 **214 tests passing** (was 82). Migrations 001–009 queued for `python -m db.setup`.
 
 Remaining §27.2 phases: 10 streaming (gated on a real governed source —
-DECISIONS_NEEDED #6), 11 policy packs + revalidation trigger, 12 network
-hardening, 13 capacity service + control-plane budget, 14 API layer,
-15 auth cutover to native Apps hosting, 16 interview optimizer/telemetry.
+DECISIONS_NEEDED #6; still no source as of 2026-07-07), ~~11 policy packs +
+revalidation trigger~~ (done 2026-07-07), 12 network hardening, 13 capacity
+service + control-plane budget, 14 API layer, 15 auth cutover to native Apps
+hosting, 16 interview optimizer/telemetry.
 See `DECISIONS_NEEDED.md` for owner decisions, several of which gate these.
 
-**⚠ Live verification blocked:** the Databricks workspace org
-(7474651926930548) reports "cancelled or is not active" — resource creation
-403s and the SQL warehouse never starts. Auth/read/validate/plan/upload/destroy
-all verified working. Once the account is active, run:
+**⚠ Live verification still pending** (see the 2026-07-07 workspace note at
+the top — blocker is now serverless capacity, not account cancellation).
+Once a warehouse starts, run:
 
 ```bash
 python scripts/verify_live_roundtrip.py   # Week 1 round-trip proof
-python -m db.setup                        # applies migrations 001–006
+python -m db.setup                        # applies migrations 001–010
 ```
 
 ---
