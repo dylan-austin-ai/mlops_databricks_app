@@ -2,7 +2,7 @@
 
 Replace the body of `train()` with real feature engineering and model training.
 The scaffold handles the MLOps plumbing: MLflow autologging, UC registry
-registration, and catalog-scoped output so dev/staging/prod stay isolated.
+registration, and schema-scoped output so dev/staging/prod stay isolated.
 """
 
 from __future__ import annotations
@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 
 
-def train(catalog: str, model_name: str, retrain: bool = False) -> None:
+def train(catalog: str, schema: str, model_name: str, retrain: bool = False) -> None:
     import mlflow
 
     mlflow.set_registry_uri("databricks-uc")
-    uc_model = f"{catalog}.ml.{model_name}"
+    uc_model = f"{catalog}.{schema}.{model_name}"
 
     with mlflow.start_run():
         mlflow.set_tag("project_id", model_name)
@@ -30,7 +30,8 @@ def train(catalog: str, model_name: str, retrain: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--catalog", required=True)
+    parser.add_argument("--schema", required=True)
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--retrain", action="store_true")
     args = parser.parse_args()
-    train(args.catalog, args.model_name, args.retrain)
+    train(args.catalog, args.schema, args.model_name, args.retrain)

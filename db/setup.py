@@ -35,6 +35,45 @@ def _exec_one(ws: Any, warehouse_id: str, sql: str) -> None:
         raise RuntimeError(f"SQL failed: {err}\nSQL: {sql[:120]}")
 
 
+def _split_statements(sql: str) -> list[str]:
+    """Split rendered SQL on ';' — but never inside a quoted string or a
+    `--` line comment (COMMENT clauses legitimately contain semicolons;
+    found live when migration 003 was cut mid-string)."""
+    statements: list[str] = []
+    buf: list[str] = []
+    in_string = False
+    in_comment = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if in_comment:
+            buf.append(ch)
+            if ch == "\n":
+                in_comment = False
+        elif in_string:
+            buf.append(ch)
+            if ch == "'":
+                if sql[i + 1 : i + 2] == "'":  # escaped '' stays inside the string
+                    buf.append("'")
+                    i += 1
+                else:
+                    in_string = False
+        elif ch == "'":
+            in_string = True
+            buf.append(ch)
+        elif ch == "-" and sql[i : i + 2] == "--":
+            in_comment = True
+            buf.append(ch)
+        elif ch == ";":
+            statements.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    statements.append("".join(buf))
+    return [s.strip() for s in statements if s.strip()]
+
+
 def run_setup(catalog: str | None = None, schema: str | None = None) -> None:
     cfg = get_config()
     catalog = catalog or cfg.catalog
@@ -48,8 +87,14 @@ def run_setup(catalog: str | None = None, schema: str | None = None) -> None:
 
     ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
 
-    # Create catalog and schema first — tables can't exist without them
-    _exec_one(ws, cfg.warehouse_id, f"CREATE CATALOG IF NOT EXISTS {catalog}")
+    # Create catalog and schema first — tables can't exist without them.
+    # Default Storage workspaces reject plain CREATE CATALOG via SQL/API;
+    # MLOPS_MANAGED_LOCATION supplies the required location (decision 2026-07-07).
+    create_catalog = f"CREATE CATALOG IF NOT EXISTS {catalog}"
+    if cfg.managed_location:
+        location = cfg.managed_location.replace("'", "''")
+        create_catalog += f" MANAGED LOCATION '{location}'"
+    _exec_one(ws, cfg.warehouse_id, create_catalog)
     print(f"Catalog '{catalog}' ready.")
     _exec_one(ws, cfg.warehouse_id, f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
     print(f"Schema '{catalog}.{schema}' ready.")
@@ -59,7 +104,7 @@ def run_setup(catalog: str | None = None, schema: str | None = None) -> None:
     rendered = raw.replace("{catalog}", catalog).replace("{schema}", schema)
 
     # Split on statement boundaries — each CREATE TABLE is one statement
-    statements = [s.strip() for s in rendered.split(";") if s.strip()]
+    statements = _split_statements(rendered)
 
     print(f"Creating {len(statements)} tables in {catalog}.{schema} ...")
 
@@ -122,7 +167,7 @@ def run_migrations(ws: Any, warehouse_id: str, catalog: str, schema: str) -> Non
             print(f"  migration {path.name}: already applied, skipping")
             continue
         rendered = path.read_text().replace("{catalog}", catalog).replace("{schema}", schema)
-        for stmt in (s.strip() for s in rendered.split(";") if s.strip()):
+        for stmt in _split_statements(rendered):
             _exec_one(ws, warehouse_id, stmt)
         _exec_one(
             ws,

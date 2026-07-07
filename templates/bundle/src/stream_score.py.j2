@@ -3,7 +3,7 @@
 Reads micro-batches from an already-governed source stream/table (§9.4 boundary:
 this job scores an existing source — it never authors the upstream pipeline),
 resolves @champion from the UC registry, and writes predictions to a Delta
-table in the environment catalog. Output is a normal Delta table, so the same
+table in the project schema. Output is a normal Delta table, so the same
 telemetry and monitoring attach as for batch/real-time.
 """
 
@@ -12,18 +12,18 @@ from __future__ import annotations
 import argparse
 
 
-def score_stream(catalog: str, model_name: str, source_table: str) -> None:
+def score_stream(catalog: str, schema: str, model_name: str, source_table: str) -> None:
     import mlflow
 
     mlflow.set_registry_uri("databricks-uc")
-    model_uri = f"models:/{catalog}.ml.{model_name}@champion"
+    model_uri = f"models:/{catalog}.{schema}.{model_name}@champion"
 
     # TODO(data-scientist): replace with real feature assembly per micro-batch.
     # Example skeleton:
     #   model = mlflow.pyfunc.load_model(model_uri)
     #   def score_batch(df, batch_id):
     #       preds = model.predict(df.toPandas())
-    #       ...write preds to f"{catalog}.ml.stream_predictions"...
+    #       ...write preds to f"{catalog}.{schema}.stream_predictions"...
     #   (spark.readStream.table(source_table)
     #        .writeStream.foreachBatch(score_batch)
     #        .option("checkpointLocation", ...)
@@ -36,7 +36,8 @@ def score_stream(catalog: str, model_name: str, source_table: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--catalog", required=True)
+    parser.add_argument("--schema", required=True)
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--source-table", required=True)
     args = parser.parse_args()
-    score_stream(args.catalog, args.model_name, args.source_table)
+    score_stream(args.catalog, args.schema, args.model_name, args.source_table)

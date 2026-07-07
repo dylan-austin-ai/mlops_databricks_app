@@ -4,10 +4,17 @@ bundle:
 include:
   - resources/*.yml
 
+# Schema-per-project convention (owner decision 2026-07-07): every project
+# gets one schema per environment inside a configurable catalog. The catalog
+# is config on the control plane (MLOPS_PROJECTS_CATALOG, with optional
+# per-env overrides) — flipping to catalog-per-env later is a config change.
 variables:
   catalog:
-    description: Environment-scoped catalog for this project (catalog-per-environment pattern)
-    default: {{ team_name }}_{{ project_name }}_dev
+    description: Catalog holding this project's schemas (schema-per-project convention)
+    default: {{ catalog_dev }}
+  schema:
+    description: Project-scoped schema inside the catalog
+    default: {{ project_name }}_dev
 
 permissions:
   - level: CAN_MANAGE
@@ -19,13 +26,15 @@ targets:
     workspace:
       host: {{ workspace_host }}
     variables:
-      catalog: {{ team_name }}_{{ project_name }}_dev
+      catalog: {{ catalog_dev }}
+      schema: {{ project_name }}_dev
 
   staging:
     workspace:
       host: {{ workspace_host }}
     variables:
-      catalog: {{ team_name }}_{{ project_name }}_staging
+      catalog: {{ catalog_staging }}
+      schema: {{ project_name }}_staging
 
   prod:
     mode: production
@@ -35,4 +44,5 @@ targets:
     run_as:
       user_name: {{ owner_email }}
     variables:
-      catalog: {{ team_name }}_{{ project_name }}_prod
+      catalog: {{ catalog_prod }}
+      schema: {{ project_name }}_prod

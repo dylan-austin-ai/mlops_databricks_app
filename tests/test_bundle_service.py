@@ -26,6 +26,10 @@ def cfg() -> AppConfig:
         databricks_host="https://test.cloud.databricks.com",
         databricks_token="dapi-test",
         warehouse_id="wh123",
+        projects_catalog="mlops",
+        projects_catalog_dev="",
+        projects_catalog_staging="",
+        projects_catalog_prod="",
     )
 
 
@@ -84,21 +88,44 @@ class TestGenerate:
         bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
 
         assert (bundle_dir / "databricks.yml").exists()
+        assert (bundle_dir / "resources" / "schemas.yml").exists()
         assert (bundle_dir / "resources" / "jobs.yml").exists()
         assert not (bundle_dir / "resources" / "model_serving.yml").exists()
         assert (bundle_dir / "src" / "train.py").exists()
         assert (bundle_dir / "src" / "batch_score.py").exists()
 
     def test_databricks_yml_targets_and_catalogs(self, cfg, tmp_path):
+        # Schema-per-project inside a configurable catalog (decision 2026-07-07)
         svc = BundleService(config=cfg, runner=FakeRunner())
         bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
         doc = yaml.safe_load((bundle_dir / "databricks.yml").read_text())
 
         assert doc["bundle"]["name"] == "churn"
-        assert doc["targets"]["dev"]["variables"]["catalog"] == "retention_churn_dev"
-        assert doc["targets"]["prod"]["variables"]["catalog"] == "retention_churn_prod"
+        assert doc["targets"]["dev"]["variables"]["catalog"] == "mlops"
+        assert doc["targets"]["dev"]["variables"]["schema"] == "churn_dev"
+        assert doc["targets"]["prod"]["variables"]["catalog"] == "mlops"
+        assert doc["targets"]["prod"]["variables"]["schema"] == "churn_prod"
         assert doc["targets"]["prod"]["mode"] == "production"
         assert doc["targets"]["dev"]["workspace"]["host"] == cfg.databricks_host
+
+    def test_per_env_catalog_override_is_config_only(self, cfg, tmp_path):
+        # The 100+-project escape hatch: env-scoped catalogs via config alone
+        cfg.projects_catalog_prod = "mlops_prod"
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+        doc = yaml.safe_load((bundle_dir / "databricks.yml").read_text())
+
+        assert doc["targets"]["dev"]["variables"]["catalog"] == "mlops"
+        assert doc["targets"]["prod"]["variables"]["catalog"] == "mlops_prod"
+
+    def test_schema_resource_declared(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+        doc = yaml.safe_load((bundle_dir / "resources" / "schemas.yml").read_text())
+
+        schema = doc["resources"]["schemas"]["churn_schema"]
+        assert schema["catalog_name"] == "${var.catalog}"
+        assert schema["name"] == "${var.schema}"
 
     def test_jobs_yml_shape(self, cfg, tmp_path):
         svc = BundleService(config=cfg, runner=FakeRunner())
@@ -124,7 +151,8 @@ class TestGenerate:
         # §9.1 governance-by-default: both ON, route_optimized top-level
         assert ep["route_optimized"] is True
         assert ep["ai_gateway"]["inference_table_config"]["enabled"] is True
-        assert ep["ai_gateway"]["inference_table_config"]["schema_name"] == "monitoring"
+        # Inference log lands in the project schema (schema-per-project, 2026-07-07)
+        assert ep["ai_gateway"]["inference_table_config"]["schema_name"] == "${var.schema}"
         assert "route_optimized" not in ep["config"]["served_entities"][0]
 
     def test_override_reason_turns_default_off(self, cfg, tmp_path):

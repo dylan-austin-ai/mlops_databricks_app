@@ -188,6 +188,11 @@ class BundleService:
             "team_name": team_name,
             "owner_email": owner_email,
             "workspace_host": self._cfg.databricks_host,
+            # Schema-per-project inside a configurable catalog (owner decision
+            # 2026-07-07); per-env catalog overrides are config, not code.
+            "catalog_dev": self._cfg.projects_catalog_for("dev"),
+            "catalog_staging": self._cfg.projects_catalog_for("staging"),
+            "catalog_prod": self._cfg.projects_catalog_for("prod"),
             "cli_version": PINNED_CLI_VERSION,
             "retraining_cron": retraining_cron,
             "batch_cron": batch_cron,
@@ -213,6 +218,7 @@ class BundleService:
         bundle_dir = output_dir / project_name
         rendered: list[tuple[str, Path]] = [
             ("databricks.yml.j2", bundle_dir / "databricks.yml"),
+            ("resources/schemas.yml.j2", bundle_dir / "resources" / "schemas.yml"),
             ("resources/jobs.yml.j2", bundle_dir / "resources" / "jobs.yml"),
             ("src/train.py.j2", bundle_dir / "src" / "train.py"),
         ]
@@ -327,6 +333,19 @@ class BundleService:
                 )
             except Exception as exc:
                 checks.append(VerificationResult(key, "model_serving_endpoint", False, str(exc)))
+
+        for key, sch in resources.get("schemas", {}).items():
+            full_name = sch.get("id") or (
+                f"{sch.get('catalog_name')}.{sch.get('name')}" if sch.get("catalog_name") and sch.get("name") else ""
+            )
+            if not full_name:
+                checks.append(VerificationResult(key, "schema", False, "no id in summary"))
+                continue
+            try:
+                fetched = ws.schemas.get(full_name=full_name)
+                checks.append(VerificationResult(key, "schema", True, f"full_name={fetched.full_name}"))
+            except Exception as exc:
+                checks.append(VerificationResult(key, "schema", False, str(exc)))
 
         return checks
 

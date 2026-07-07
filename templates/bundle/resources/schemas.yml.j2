@@ -1,0 +1,10 @@
+resources:
+  schemas:
+    {{ project_name }}_schema:
+      # Declarative schema-per-project (owner decision 2026-07-07). Schema
+      # creation works on Default Storage workspaces; only *catalog* creation
+      # needs a managed location, which the control plane handles one-time
+      # (db/setup.py, MLOPS_MANAGED_LOCATION).
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: "Project schema managed by the MLOps control plane ({{ team_name }}/{{ project_name }})"

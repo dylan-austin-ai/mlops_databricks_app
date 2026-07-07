@@ -8,7 +8,7 @@ resources:
       config:
         served_entities:
           - name: champion
-            entity_name: ${var.catalog}.ml.{{ project_name }}
+            entity_name: ${var.catalog}.${var.schema}.{{ project_name }}
             entity_version: "{{ champion_version }}"
         traffic_config:
           routes:
@@ -19,7 +19,7 @@ resources:
         inference_table_config:
           enabled: true
           catalog_name: ${var.catalog}
-          schema_name: monitoring
+          schema_name: ${var.schema}
           table_name_prefix: inference_log
 {% endif %}
       tags:

@@ -25,6 +25,23 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def _to_parameter(name: str, value: Any) -> Any:
+    """Map a Python value to a typed statement parameter. str(None)/str(True)
+    produced literal 'None'/'True' strings — found live when the policy-pack
+    sync tried to write NULL revalidation_frequency_days."""
+    from databricks.sdk.service.sql import StatementParameterListItem
+
+    if value is None:
+        return StatementParameterListItem(name=name)  # bound as NULL
+    if isinstance(value, bool):
+        return StatementParameterListItem(name=name, value="true" if value else "false", type="BOOLEAN")
+    if isinstance(value, int):
+        return StatementParameterListItem(name=name, value=str(value), type="BIGINT")
+    if isinstance(value, float):
+        return StatementParameterListItem(name=name, value=repr(value), type="DOUBLE")
+    return StatementParameterListItem(name=name, value=str(value))
+
+
 class StateService:
     """CRUD operations against UC tables via SQL warehouse."""
 
@@ -48,10 +65,10 @@ class StateService:
         `params` are passed as real named parameters (`:name` placeholders) —
         never interpolate untrusted values into the SQL string.
         """
-        from databricks.sdk.service.sql import StatementParameterListItem, StatementState
+        from databricks.sdk.service.sql import StatementState
 
         ws = self._workspace()
-        parameters = [StatementParameterListItem(name=k, value=str(v)) for k, v in params.items()] if params else None
+        parameters = [_to_parameter(k, v) for k, v in params.items()] if params else None
         response = ws.statement_execution.execute_statement(
             warehouse_id=self._cfg.warehouse_id,
             statement=sql,
