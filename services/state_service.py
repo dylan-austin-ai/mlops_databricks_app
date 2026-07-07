@@ -36,7 +36,10 @@ def _to_parameter(name: str, value: Any) -> Any:
     if isinstance(value, bool):
         return StatementParameterListItem(name=name, value="true" if value else "false", type="BOOLEAN")
     if isinstance(value, int):
-        return StatementParameterListItem(name=name, value=str(value), type="BIGINT")
+        # INT unless it overflows: date_sub()/make_interval() reject BIGINT
+        # arguments outright (found live), and most int params are small
+        int_type = "INT" if -(2**31) <= value < 2**31 else "BIGINT"
+        return StatementParameterListItem(name=name, value=str(value), type=int_type)
     if isinstance(value, float):
         return StatementParameterListItem(name=name, value=repr(value), type="DOUBLE")
     return StatementParameterListItem(name=name, value=str(value))

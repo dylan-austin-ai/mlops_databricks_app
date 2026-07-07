@@ -131,20 +131,24 @@ conversation has lead time. Relevant once >~20 real-time models are plausible.
   2026-07-07 (surfaced as PLACEHOLDER in Portfolio Analytics). Still worth a
   real by-hand measurement eventually; replace `DE_NOVO_BASELINE_DAYS` and
   its placeholder flag together in `portfolio_analytics_service.py`.
-- **Policy pack tiers (§20.3):** phase 11 landed 2026-07-07 — the mechanism is
-  live and `policy_packs/generic_tiering.yaml` is the shipped placeholder.
-  **Now actionable:** PR your real tiers/gates as YAML into `policy_packs/`
-  (tier names and gate names are free-form data; `on_revalidation_due` must be
-  warn / block_new_traffic / block_all_traffic).
+- **Policy pack tiers (§20.3):** DECIDED 2026-07-07 (evening) — the generic
+  three-tier structure is the org's **permanent** framework, not a
+  placeholder. `generic_tiering_v1` stands; future changes arrive as PRs to
+  `policy_packs/generic_tiering.yaml` (or sibling pack files).
 - **Canary window metrics (§15.2 step 5):** DECIDED 2026-07-07 — defaults to
   the wizard step-6 primary performance metric with its alert threshold as
   the breach condition (`make_default_canary_check`). A project can still
   inject a custom check; without config or monitoring rows the step stays
   *skipped*, never silently passed.
-- **Streaming go/no-go (§29.2):** phase 10 starts only when a real governed
-  source stream exists — synthetic sources deliberately don't count.
-  (Checked 2026-07-07: the workspace contains only the control plane's own
-  tables — gate stays closed, build order skipped to phase 11.)
+- **Streaming go/no-go (§29.2):** SUPERSEDED 2026-07-07 (evening) — owner
+  wants everything pilotable/demoable on fake data. Phase 10 may proceed
+  against the synthetic source (`{catalog}.demo_streaming.events`, seeded by
+  `scripts/seed_demo_data.py`, with `--tick` simulating the upstream
+  producer). Honest caveat retained from the original rationale: a synthetic
+  source validates the *mechanism* (continuous job, checkpointing, scoring,
+  monitoring attach), not real-source integration risk (schema drift, gaps,
+  latency variance, upstream ownership) — re-verify against the first real
+  governed stream before any production streaming claim.
 - **Cost figures use list prices** (`system.billing.list_prices` default):
   ignores negotiated discounts. Fine for trends; decide whether absolute
   dollars matter enough to feed real rates in later.

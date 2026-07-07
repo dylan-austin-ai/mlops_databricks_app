@@ -1,9 +1,8 @@
-# Shipped default — the only pack installed out of the box (§20.3).
-# The app ships the mechanism, not the framework: orgs copy this file, rename
-# tiers/gates to match SR 11-7, EU AI Act, or any internal framework, and PR
-# it in as their own pack. Reviewed via PR into this repo — GitHub is the
-# source of truth for governance rules, the mlops.policy_packs table is the
-# synced, queryable index (PolicyPackService.sync_packs).
+# The org's permanent risk framework (owner decision 2026-07-07) — no longer
+# a placeholder. Changes to tiers/gates happen here via PR (§20.3): GitHub is
+# the source of truth for governance rules, the mlops.policy_packs table is
+# the synced, queryable index (PolicyPackService.sync_packs). Additional packs
+# (e.g. a future regulatory overlay) can be added as sibling YAML files.
 policy_pack_id: generic_tiering_v1
 name: Generic three-tier risk mechanism
 tiers:

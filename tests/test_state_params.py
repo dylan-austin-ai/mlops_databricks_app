@@ -20,9 +20,15 @@ def test_bool_binds_typed_lowercase():
     assert _to_parameter("x", False).value == "false"
 
 
-def test_int_binds_bigint():
+def test_int_binds_int():
+    # date_sub()/make_interval() reject BIGINT args — small ints must be INT
     p = _to_parameter("x", 365)
-    assert (p.value, p.type) == ("365", "BIGINT")
+    assert (p.value, p.type) == ("365", "INT")
+
+
+def test_huge_int_binds_bigint():
+    p = _to_parameter("x", 2**40)
+    assert (p.value, p.type) == (str(2**40), "BIGINT")
 
 
 def test_float_binds_double():

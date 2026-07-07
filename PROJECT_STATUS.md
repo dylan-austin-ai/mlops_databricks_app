@@ -36,8 +36,30 @@ missing monitoring tables), American English audit (Organisation→Organization
 etc.), st.columns top-alignment CSS. Attestation persistence (old gap 6)
 verified already wired end-to-end — removed from the gap list.
 
-**258 tests passing.** Remaining §27.2 phases: 10 (still gated — no governed
-source), 12–16.
+**258 tests passing.** Remaining §27.2 phases: 10 (unblocked — see below),
+12–16.
+
+**Evening additions (owner decisions):**
+
+- **Generic tiering is permanent** — `generic_tiering_v1` is the org's real
+  framework, not a placeholder; the org-pack template draft was removed.
+- **Fake-data pilot sanctioned** — everything must be demoable on synthetic
+  data. `scripts/seed_demo_data.py` seeds a coherent, teardown-able demo
+  project (config, tiered governance, model + champion version, approvals
+  joined to deployments, performance incl. one degraded blip, 14 days of
+  costs, reviewed business-value fn + impact, shared features with
+  multi-consumer lineage, a warn-severity revalidation flag, HITL queue,
+  reconciliation history) plus a synthetic streaming source
+  `{catalog}.demo_streaming.events` with `--tick` simulating the upstream
+  producer. Verified live: portfolio speed/reliability/reuse/impact/
+  revalidation, policy gate union, and the streaming table all light up.
+  `--teardown` removes exactly what seeding created (audit rows kept).
+- This **supersedes the phase 10 gate for pilot/demo purposes**: streaming
+  builds against the synthetic source; re-verify against a real governed
+  stream before production streaming claims (rationale preserved in
+  DECISIONS_NEEDED).
+- Live-found fix #3 this session: typed INT params — `date_sub()`/
+  `make_interval()` reject BIGINT arguments, so small ints now bind as INT.
 
 ---
 
