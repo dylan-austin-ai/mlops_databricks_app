@@ -1,6 +1,30 @@
 # MLOps Databricks App — Project Status
 
-**Last updated:** 2026-07-07 (second session)
+**Last updated:** 2026-07-07 (third session)
+
+---
+
+## 2026-07-07 third session — scaffold cutover to Bundle Service — DONE
+
+Wizard scaffold path (DECISIONS_NEEDED #4, approved 2026-07-07) cut over:
+
+- `_scaffold_code` now renders projects via `BundleService.generate()` (the
+  same Jinja2 templates as the round-trip-verified bundles) instead of the
+  external `databricks_mlops` package — **gap #3 closed**; projects created
+  through the wizard now get real deployable bundles.
+- `.mlops/` platform files unchanged; the scaffold is git-initialized on
+  `main` with an initial commit (`--no-verify` — host commit-msg hooks must
+  not gate machine-generated scaffold commits) so the GitHub push step
+  still works.
+- **Latent bug exposed + fixed:** `_check_scope_script`'s outer f-string left
+  the generated script's own placeholders unescaped (`{PROJECT_NAME}`,
+  `{manifest_hash}`, `{len(changed)}`, …) → NameError at scaffold time. Never
+  seen before because the old path always failed at the `databricks_mlops`
+  import before reaching it. A test now `compile()`s the generated script.
+- GitHub/UC/MLflow/secret-scope steps untouched, per the decision.
+
+**264 tests passing** (was 259; +5 scaffold tests: real template render,
+serving variant, .mlops files + script compile, git init, failure path).
 
 ---
 
@@ -194,7 +218,7 @@ A Streamlit multi-page governance wizard that guides a data scientist through cr
 |---------|-------------|
 | `services/interview_service.py` | Pydantic v2 models for all 7 steps; step-level validation |
 | `services/state_service.py` | Databricks SQL CRUD for project configs; stores manifest hash alongside responses |
-| `services/generator_service.py` | Scaffold → GitHub repo push; UC schemas (dev/staging/prod); MLflow experiment; secret scope; CI/CD change-scope script injected into scaffold; `.mlops/approval_record.json` with per-approver manifest hash |
+| `services/generator_service.py` | Bundle scaffold via `BundleService.generate()` → git init → GitHub repo push; UC schemas (dev/staging/prod); MLflow experiment; secret scope; CI/CD change-scope script injected into scaffold; `.mlops/approval_record.json` with per-approver manifest hash |
 | `services/ai_service.py` | LLM calls via Databricks Model Serving REST API; PII check, column classification, SHAP/LIME interpretation |
 | `services/db_service.py` | UC schema inference, org teams, drift log queries, baseline stats |
 
@@ -213,10 +237,15 @@ A Streamlit multi-page governance wizard that guides a data scientist through cr
 
 ## Tests
 
-82 passing — cover all Pydantic step models, step-level validation, and generator service.
+259 passing — cover all services, Pydantic step models, step-level validation,
+and the generator.
+
+Run with the project venv — the system `python3` fails test collection
+(cross-test imports like `from tests.test_approval_service import ...` don't
+resolve outside `.venv`):
 
 ```
-python3 -m pytest tests/
+.venv/bin/python -m pytest tests/
 ```
 
 ---
@@ -225,7 +254,7 @@ python3 -m pytest tests/
 
 1. **American English audit** — UI text not systematically reviewed; a few British spellings may remain.
 2. **Framework/protected-attribute dropdown top-alignment** — CSS fix needed for multiselect widgets rendered inside `st.columns`; they currently don't align to the top of their column when another column has more content.
-3. **`databricks_mlops` package** — `generator_service.py` imports `databricks_mlops.generation.project_generator` for scaffold generation. If that package isn't installed the scaffold step fails gracefully (status = "failed") but there is no built-in template fallback. Needs either a bundled Jinja2 template system or a pre-install check in settings.
+3. ~~**`databricks_mlops` package**~~ — closed 2026-07-07 (third session): scaffold now renders via `BundleService.generate()` and its bundled Jinja2 templates; the external package is no longer imported.
 4. ~~**Approval write path**~~ — closed 2026-07-05: concurrency-safe MERGE write-path in `services/approval_service.py`, wired into `03_approvals.py`. (Write-back to `.mlops/approval_record.json` via PR still pending — lands with the saga's CI/CD integration.)
 5. **Dashboard empty state** — `06_project_dashboard.py` drift and explainability tabs read from Databricks tables (`monitoring_baseline`, `monitoring_drift_log`) that only exist after a model has run. New projects show an error; needs a friendly empty state.
 6. **Column-level classification attestation storage** — attestations are stored in session state during the wizard but need to be persisted to the project config table on save.

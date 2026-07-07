@@ -94,12 +94,12 @@ an endpoint-config update. Nothing to decide *before* the workspace is back.
 
 ---
 
-## 4. Wizard scaffold path — APPROVED 2026-07-07: next build session
+## 4. Wizard scaffold path — DONE 2026-07-07 (third session)
 
-Owner approved the cutover; scheduled as the next build session's main item
-(replace `_scaffold_code` internals with `BundleService.generate()` + the
-existing `.mlops/` files, keeping GitHub/UC/MLflow/secret-scope steps).
-Original context follows.
+Owner approved the cutover 2026-07-07; built the same day: `_scaffold_code`
+internals replaced with `BundleService.generate()` + the existing `.mlops/`
+files + git init/initial commit, GitHub/UC/MLflow/secret-scope steps kept
+as-is. See PROJECT_STATUS.md third-session entry. Original context follows.
 
 ## 4-old. Wizard scaffold path — cut over to Bundle Service?
 

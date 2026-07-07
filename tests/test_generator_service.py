@@ -1,8 +1,15 @@
-"""Tests for generator_service — GenerationResult and step tracking."""
+"""Tests for generator_service — GenerationResult, step tracking, and the bundle scaffold."""
 
 from __future__ import annotations
 
-from services.generator_service import GenerationResult
+import json
+import os
+import subprocess
+
+import pytest
+
+from config import AppConfig
+from services.generator_service import GenerationResult, ProjectInfrastructureGenerator
 
 
 class TestGenerationResult:
@@ -85,3 +92,93 @@ class TestGenerationResult:
         assert r.github_repo_url == "https://github.com/org/p"
         assert r.uc_schema_dev == "mlops.p_dev"
         assert r.mlflow_experiment_id == "exp_123"
+
+
+@pytest.fixture
+def cfg() -> AppConfig:
+    return AppConfig(
+        databricks_host="https://test.cloud.databricks.com",
+        databricks_token="dapi-test",
+        warehouse_id="wh123",
+    )
+
+
+def _responses(**overrides) -> dict:
+    base = {
+        "team_name": "retention_team",
+        "inference_type": "batch",
+        "batch_schedule": "0 2 * * *",
+        "retraining_schedule": "0 3 * * 0",
+        "legal_contact_email": "legal@example.com",
+        "code_review_count": 2,
+    }
+    base.update(overrides)
+    return base
+
+
+def _scaffold(cfg: AppConfig, **overrides):
+    gen = ProjectInfrastructureGenerator(cfg)
+    result = GenerationResult(project_name="churn_model")
+    path = gen._scaffold_code("churn_model", "owner@example.com", _responses(**overrides), result)
+    return path, result
+
+
+class TestScaffoldCode:
+    """Scaffold cutover to Bundle Service (DECISIONS_NEEDED #4, 2026-07-07)."""
+
+    def test_renders_bundle_scaffold(self, cfg):
+        path, result = _scaffold(cfg)
+        assert path is not None
+        assert result.steps[0] == {"name": "scaffold_code", "status": "ok", "detail": str(path)}
+        for rel in (
+            "databricks.yml",
+            "resources/schemas.yml",
+            "resources/jobs.yml",
+            "src/train.py",
+            "src/batch_score.py",
+        ):
+            assert (path / rel).is_file(), f"missing {rel}"
+
+    def test_realtime_scaffold_includes_serving(self, cfg):
+        path, _ = _scaffold(cfg, inference_type="real_time", batch_schedule="")
+        assert (path / "resources" / "model_serving.yml").is_file()
+        assert not (path / "src" / "batch_score.py").exists()
+
+    def test_writes_mlops_platform_files(self, cfg):
+        path, _ = _scaffold(cfg)
+        manifest_hash = (path / ".mlops" / "manifest_hash.txt").read_text().strip()
+        assert len(manifest_hash) == 64 and all(c in "0123456789abcdef" for c in manifest_hash)
+        assert (path / ".mlops" / "approved_state.txt").read_text() == "INITIAL\n"
+        record = json.loads((path / ".mlops" / "approval_record.json").read_text())
+        assert record["project_name"] == "churn_model"
+        assert record["manifest_hash"] == manifest_hash
+        script = path / "scripts" / "check_change_scope.py"
+        assert script.is_file() and os.access(script, os.X_OK)
+        script_text = script.read_text()
+        compile(script_text, "check_change_scope.py", "exec")  # generated script is valid Python
+        assert "PROJECT_NAME = 'churn_model'" in script_text
+
+    def test_git_repo_on_main_with_initial_commit(self, cfg):
+        path, _ = _scaffold(cfg)
+
+        def git(*args: str) -> str:
+            proc = subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True)
+            return proc.stdout.strip()
+
+        assert git("rev-parse", "--abbrev-ref", "HEAD") == "main"
+        assert git("status", "--porcelain") == ""  # everything committed
+        assert git("log", "--oneline").count("\n") == 0  # exactly one commit
+        assert "databricks.yml" in git("ls-files")
+        assert ".mlops/manifest_hash.txt" in git("ls-files")
+
+    def test_failure_reports_failed_step(self, cfg):
+        class ExplodingBundleService:
+            def generate(self, **kwargs):
+                raise RuntimeError("template render failed")
+
+        gen = ProjectInfrastructureGenerator(cfg, bundle_service=ExplodingBundleService())
+        result = GenerationResult(project_name="churn_model")
+        path = gen._scaffold_code("churn_model", "owner@example.com", _responses(), result)
+        assert path is None
+        assert result.steps[0]["status"] == "failed"
+        assert "template render failed" in result.steps[0]["detail"]

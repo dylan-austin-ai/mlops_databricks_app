@@ -1,7 +1,8 @@
 """ProjectInfrastructureGenerator — orchestrates everything created when a project is born.
 
 Steps executed in order:
-  1. Scaffold code locally via databricks_mlops.ProjectGenerator (temp dir)
+  1. Render the Databricks Asset Bundle scaffold via BundleService (temp dir),
+     add .mlops/ platform files, git-init with an initial commit
   2. Create GitHub repo and push the scaffold
   3. Create Databricks UC schemas (dev / staging / prod)
   4. Create MLflow experiment
@@ -18,7 +19,7 @@ import json
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +51,10 @@ class GenerationResult:
 
 
 class ProjectInfrastructureGenerator:
-    def __init__(self, config: AppConfig | None = None) -> None:
+    def __init__(self, config: AppConfig | None = None, bundle_service: Any = None) -> None:
         self._cfg = config or get_config()
+        # Injectable for tests; defaults to a real BundleService on first use
+        self._bundle = bundle_service
 
     def generate(
         self,
@@ -91,43 +94,26 @@ class ProjectInfrastructureGenerator:
         result: GenerationResult,
     ) -> Path | None:
         try:
-            from databricks_mlops.generation.project_generator import ProjectGenerator
+            from services.bundle_service import BundleService
 
-            inference_type = interview_responses.get("inference_type", "batch")
-            project_type = "realtime-model" if inference_type == "real_time" else "batch-pipeline"
-
-            # Toolkit requires kebab-case names
-            kebab_name = project_name.replace("_", "-")
-
-            workspace_config = {
-                "host": self._cfg.databricks_host,
-                "catalog": self._cfg.catalog,
-                "schema": project_name,
-                "owner": owner_email,
-            }
-
-            features: list[str] = []
-            # Fairness is always enabled; include feature if any protected attributes are declared
-            fairness_attrs = interview_responses.get("fairness_attributes", [])
-            if fairness_attrs:
-                features.append("fairness")
-
-            # model_frameworks (new list field) or legacy model_type
-            frameworks = interview_responses.get("model_frameworks", [interview_responses.get("model_type", "sklearn")])
+            if self._bundle is None:
+                self._bundle = BundleService(self._cfg)
 
             tmp = Path(tempfile.mkdtemp(prefix="mlops_scaffold_"))
-            gen = ProjectGenerator()
-            scaffold_path = gen.create_project(
-                name=kebab_name,
-                project_type=project_type,
-                workspace_config=workspace_config,
+            scaffold_path = self._bundle.generate(
+                project_name=project_name,
+                team_name=interview_responses.get("team_name", ""),
+                owner_email=owner_email,
+                interview_responses=interview_responses,
                 output_dir=tmp,
-                features=features,
-                frameworks=frameworks,
             )
 
             # Write .mlops/ platform files into the scaffold
             self._write_mlops_files(scaffold_path, project_name, owner_email, interview_responses)
+
+            # The GitHub step pushes `main`, so the scaffold must be a
+            # committed git repo before it runs
+            self._git_init_commit(scaffold_path)
 
             result.add_step("scaffold_code", "ok", str(scaffold_path))
             return scaffold_path
@@ -135,6 +121,27 @@ class ProjectInfrastructureGenerator:
         except Exception as exc:
             result.add_step("scaffold_code", "failed", str(exc))
             return None
+
+    @staticmethod
+    def _git_init_commit(scaffold_path: Path) -> None:
+        for args in (
+            ["git", "init", "-b", "main"],
+            ["git", "add", "-A"],
+            [
+                "git",
+                "-c",
+                "user.name=mlops-control-plane",
+                "-c",
+                "user.email=mlops-control-plane@noreply.local",
+                "commit",
+                # Host-machine hooks (e.g. commit-msg policies) must not gate
+                # this machine-generated commit in an ephemeral scaffold repo
+                "--no-verify",
+                "-m",
+                "Initial scaffold",
+            ],
+        ):
+            subprocess.run(args, cwd=scaffold_path, check=True, capture_output=True)
 
     def _write_mlops_files(
         self,
@@ -164,7 +171,7 @@ class ProjectInfrastructureGenerator:
         approval_record = {
             "project_name": project_name,
             "manifest_hash": manifest_hash,
-            "created_timestamp": datetime.now(timezone.utc).isoformat(),
+            "created_timestamp": datetime.now(UTC).isoformat(),
             "required_approvers": [
                 {"role": "Legal / Fairness", "email": r.get("legal_contact_email", "")},
                 {"role": "Business Stakeholder", "email": r.get("business_contact_email", "")},
@@ -266,15 +273,15 @@ def build_review_request(changed: list[str], base_sha: str) -> str:
     lines = [
         "## Re-Approval Required",
         "",
-        f"**Project:** `{PROJECT_NAME}`",
-        f"**Previously approved state:** `{short_sha}`",
-        f"**Manifest hash:** `{manifest_hash}`",
+        f"**Project:** `{{PROJECT_NAME}}`",
+        f"**Previously approved state:** `{{short_sha}}`",
+        f"**Manifest hash:** `{{manifest_hash}}`",
         "",
         "The following substantive files changed since the last approved state:",
         "",
     ]
     for f in changed:
-        lines.append(f"- `{f}`")
+        lines.append(f"- `{{f}}`")
 
     lines += [
         "",
@@ -285,9 +292,9 @@ def build_review_request(changed: list[str], base_sha: str) -> str:
         role = approver.get("role", "")
         email = approver.get("email", "")
         count = approver.get("count", "")
-        count_str = f" (x{count})" if count else ""
-        email_str = f" — {email}" if email else ""
-        lines.append(f"- **{role}**{count_str}{email_str}")
+        count_str = f" (x{{count}})" if count else ""
+        email_str = f" — {{email}}" if email else ""
+        lines.append(f"- **{{role}}**{{count_str}}{{email_str}}")
 
     lines += ["", "**Diff from last approved state:**", "```diff"]
     try:
@@ -312,7 +319,7 @@ def main() -> None:
     change_type, substantive = classify(changed)
 
     if change_type == "bug_fix":
-        print(f"✓ Bug-fix change — auto-promote allowed ({len(changed)} file(s) changed)")
+        print(f"✓ Bug-fix change — auto-promote allowed ({{len(changed)}} file(s) changed)")
         sys.exit(0)
 
     review_md = build_review_request(substantive or changed, base_sha)
@@ -324,7 +331,7 @@ def main() -> None:
     if change_type == "initial":
         print("ℹ Initial deployment — full approval required before first promotion.")
     else:
-        print(f"⚠ Substantive change detected ({len(substantive)} file(s)) — re-approval required.")
+        print(f"⚠ Substantive change detected ({{len(substantive)}} file(s)) — re-approval required.")
 
     sys.exit(1)
 
@@ -464,7 +471,6 @@ if __name__ == "__main__":
     def _create_secret_scope(self, project_name: str, result: GenerationResult) -> None:
         try:
             from databricks.sdk import WorkspaceClient
-            from databricks.sdk.service.workspace import AclPermission
 
             ws = WorkspaceClient(
                 host=self._cfg.databricks_host,
