@@ -6,7 +6,11 @@ wasn't reviewed. Step 7 (audit record) always runs, even on failure, so the
 audit trail records exactly what state was reached.
 
 Step semantics per §15.2:
-  1. verify gates          read-only; abort if unsatisfied
+  1. verify gates          read-only; abort if unsatisfied. Includes the union
+                           of the project's policy-pack-required gates (§20.2 —
+                           which gates are required is data, never a hardcoded
+                           list, §28) and refuses promotion while a blocking
+                           revalidation flag is active (§20.5)
   2. bundle deploy --plan  abort on failure, nothing to compensate
   3. register to prod      on failure: bundle deployed but no traffic change —
                            safe; alert MLOps and stop
@@ -37,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from services.bundle_service import BundleService, PlanSummary
+from services.policy_pack_service import PolicyPackService
 from services.registry_service import CHALLENGER, CHAMPION, RegistryService
 from services.state_service import StateService
 
@@ -69,6 +74,7 @@ class PromoteToProductionSaga:
         bundles: BundleService | None = None,
         registry: RegistryService | None = None,
         canary_check: Callable[[str], bool | None] | None = None,
+        policy: PolicyPackService | None = None,
     ) -> None:
         """canary_check(uc_full_name) returns True (healthy), False (breach),
         or None (no monitoring attached — logged as skipped, not passed)."""
@@ -76,6 +82,7 @@ class PromoteToProductionSaga:
         self._bundles = bundles or BundleService()
         self._registry = registry or RegistryService()
         self._canary_check = canary_check or (lambda _uc: None)
+        self._policy = policy or PolicyPackService(state=self._state)
 
     def run(
         self,
@@ -99,6 +106,14 @@ class PromoteToProductionSaga:
             if approval is None or str(approval.get("status")) != "approved":
                 result.add("verify_gates", "failed", f"approval {approval_id} not approved")
                 raise SagaAborted("approval gates not satisfied")
+            missing = sorted(self._policy.unsatisfied_gates(project_id))
+            if missing:
+                result.add("verify_gates", "failed", f"policy-pack gates not approved: {missing}")
+                raise SagaAborted("policy-pack gates not satisfied (§20.2)")
+            block = self._policy.revalidation_block(project_id)
+            if block in ("block_new_traffic", "block_all_traffic"):
+                result.add("verify_gates", "failed", f"revalidation due — {block} in force (§20.5)")
+                raise SagaAborted("revalidation due — promotion blocked until re-review completes")
             result.add("verify_gates", "ok")
 
             # 2 — deploy the exact reviewed plan (§15.1)

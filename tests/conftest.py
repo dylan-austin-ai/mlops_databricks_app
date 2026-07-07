@@ -65,6 +65,9 @@ def valid_step4() -> dict:
         "data_quality_acceptable_issues": [],
         "proxy_variables": [],
         "column_justifications": {},
+        "risk_tier": "tier_2",
+        "risk_tier_justification": "Customer-facing churn scoring; moderate business materiality.",
+        "applied_policy_packs": ["generic_tiering_v1"],
     }
 
 

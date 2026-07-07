@@ -56,13 +56,14 @@ def _approved_approval(tmp_path, **overrides) -> dict:
     return base
 
 
-def _saga(cfg, state, bundles=None, client=None, canary=None) -> PromoteToProductionSaga:
+def _saga(cfg, state, bundles=None, client=None, canary=None, policy=None) -> PromoteToProductionSaga:
     registry = RegistryService(config=cfg, client=client or FakeMlflowClient())
     return PromoteToProductionSaga(
         state=state,
         bundles=bundles or FakeBundles(),
         registry=registry,
         canary_check=canary,
+        policy=policy,
     )
 
 
@@ -208,6 +209,78 @@ class TestRevocationHandling:
         assert action == "investigation_opened"
         assert client.aliases[MODEL][CHAMPION] == 3  # no automatic model action
         assert state.audits[-1]["action_type"] == "revocation_investigation_opened"
+
+
+class PolicyStub:
+    """§20.2/§20.5 policy surface the saga consults at step 1."""
+
+    def __init__(self, missing=None, block=None):
+        self.missing = set(missing or [])
+        self.block = block
+
+    def unsatisfied_gates(self, project_id):
+        return self.missing
+
+    def revalidation_block(self, project_id):
+        return self.block
+
+
+class TestPolicyPackGates:
+    def test_missing_policy_gate_aborts_before_deploy(self, cfg, tmp_path):
+        state = FakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        bundles = FakeBundles()
+        saga = _saga(cfg, state, bundles=bundles, policy=PolicyStub(missing={"security_review"}))
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is False
+        assert bundles.deploys == []  # aborted at step 1, nothing deployed
+        step = result.steps[0]
+        assert step.name == "verify_gates" and step.status == "failed"
+        assert "security_review" in step.detail
+
+    def test_revalidation_block_aborts_promotion(self, cfg, tmp_path):
+        state = FakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        bundles = FakeBundles()
+        saga = _saga(cfg, state, bundles=bundles, policy=PolicyStub(block="block_new_traffic"))
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is False
+        assert bundles.deploys == []
+        assert "revalidation due" in result.steps[0].detail
+
+    def test_warn_severity_does_not_block(self, cfg, tmp_path):
+        state = FakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        saga = _saga(cfg, state, policy=PolicyStub(block="warn"))
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True
+
+    def test_satisfied_policy_gates_promote(self, cfg, tmp_path):
+        state = FakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        saga = _saga(cfg, state, policy=PolicyStub())
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True
+        assert result.steps[0].status == "ok"
+
+    def test_default_policy_requires_nothing_for_untiered_projects(self, cfg, tmp_path):
+        # No policy injected — the saga builds PolicyPackService over FakeState,
+        # which has no project row → no packs → no extra gates (§20.2)
+        state = FakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        saga = _saga(cfg, state)
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True
 
 
 class TestModelCard:

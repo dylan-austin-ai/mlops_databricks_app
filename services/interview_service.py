@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -157,7 +157,7 @@ class Step2ModelSpecs(BaseModel):
     model_frameworks: list[str] = []
 
     @model_validator(mode="after")
-    def cross_validate(self) -> "Step2ModelSpecs":
+    def cross_validate(self) -> Step2ModelSpecs:
         if self.inference_type in ("batch", "both") and not self.batch_frequency:
             raise ValueError("batch_frequency is required for batch inference.")
         if self.inference_type in ("real_time", "both"):
@@ -193,7 +193,7 @@ class Step3DataSpecs(BaseModel):
     classification_attestations: dict[str, dict] = {}  # column → {decision, notes, timestamp}
 
     @model_validator(mode="after")
-    def validate_when_complete(self) -> "Step3DataSpecs":
+    def validate_when_complete(self) -> Step3DataSpecs:
         if not self.data_complete:
             return self  # skip all validations — DS will fill in later
         if not self.training_datasets:
@@ -226,6 +226,12 @@ class Step4Governance(BaseModel):
     fairness_override_requested: bool = False  # set when DS declares no protected attributes
     protected_attribute_justifications: dict[str, str] = {}  # attribute → justification text
     governance_attestations: dict[str, dict] = {}  # column → {decision, notes}
+    # §20.1: risk tier against org-authored tier definitions only. Governance-
+    # consequential (§29.3): an explicit choice plus a one-line justification —
+    # validate_default so omission fails, never silently passes.
+    risk_tier: str = Field(default="", validate_default=True)
+    risk_tier_justification: str = Field(default="", validate_default=True)
+    applied_policy_packs: list[str] = Field(default=["generic_tiering_v1"], validate_default=True)
 
     @field_validator("bias_test_types")
     @classmethod
@@ -241,6 +247,27 @@ class Step4Governance(BaseModel):
     def validate_threshold(cls, v: int) -> int:
         if not 1 <= v <= 50:
             raise ValueError("Fairness threshold must be between 1 and 50.")
+        return v
+
+    @field_validator("risk_tier")
+    @classmethod
+    def tier_chosen(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Risk tier is required — select the org-defined tier for this model (§20.1).")
+        return v
+
+    @field_validator("risk_tier_justification")
+    @classmethod
+    def tier_justified(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("A one-line justification for the risk tier is required (§29.3).")
+        return v
+
+    @field_validator("applied_policy_packs")
+    @classmethod
+    def at_least_one_pack(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("At least one policy pack must be applied (§20.1).")
         return v
 
 

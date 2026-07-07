@@ -45,7 +45,8 @@ def _overview_tab(project: dict, config: dict | None) -> None:
             )
 
         st.markdown(
-            '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:#64748b">Quick links</span>',
+            '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
+            'letter-spacing:.12em;color:#64748b">Quick links</span>',
             unsafe_allow_html=True,
         )
         st.markdown("")
@@ -58,7 +59,8 @@ def _overview_tab(project: dict, config: dict | None) -> None:
 
     with col_right:
         st.markdown(
-            '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:#64748b">Infrastructure</span>',
+            '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
+            'letter-spacing:.12em;color:#64748b">Infrastructure</span>',
             unsafe_allow_html=True,
         )
         st.markdown("")
@@ -71,7 +73,7 @@ def _overview_tab(project: dict, config: dict | None) -> None:
         ]
         for label, value in infra:
             chip = (
-                path_chip(value) if value and value != "—" else f'<span style="font-size:13px;color:#46546e">—</span>'
+                path_chip(value) if value and value != "—" else '<span style="font-size:13px;color:#46546e">—</span>'
             )
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;align-items:center;'
@@ -88,7 +90,8 @@ def _overview_tab(project: dict, config: dict | None) -> None:
                 resp = {}
             st.markdown("")
             st.markdown(
-                '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:#64748b">Model</span>',
+                '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
+                'letter-spacing:.12em;color:#64748b">Model</span>',
                 unsafe_allow_html=True,
             )
             st.markdown("")
@@ -213,7 +216,8 @@ def _config_tab(config: dict | None) -> None:
                 icon = "✓" if enabled else "○"
                 color = "#5eead4" if enabled else "#46546e"
                 st.markdown(
-                    f'<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #1a2740">'
+                    f'<div style="display:flex;gap:10px;align-items:center;padding:6px 0;'
+                    f'border-bottom:1px solid #1a2740">'
                     f"<span style=\"color:{color};font-family:'JetBrains Mono',monospace;font-size:12px\">{icon}</span>"
                     f'<span style="font-size:13px;color:{"#a9b6cc" if enabled else "#46546e"}">{label}</span></div>',
                     unsafe_allow_html=True,
@@ -224,7 +228,7 @@ def _config_tab(config: dict | None) -> None:
             )
 
 
-def _governance_tab(config: dict | None) -> None:
+def _governance_tab(config: dict | None, project_id: str = "") -> None:
     if not config:
         st.info("No configuration saved yet.")
         return
@@ -234,6 +238,43 @@ def _governance_tab(config: dict | None) -> None:
         responses = json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
         responses = {}
+
+    # §20.5: a lapsed revalidation window is flagged here and counts against
+    # governance coverage — not just "eventually"
+    if project_id:
+        try:
+            from services.state_service import StateService
+
+            _state = StateService()
+            flags = _state._exec(
+                f"""SELECT uc_full_name, on_due_action, status, due_since
+                    FROM {_state._tbl("revalidation_flags")}
+                    WHERE project_id = :project_id AND status IN ('due', 'in_revalidation')""",
+                {"project_id": project_id},
+            )
+        except Exception:
+            flags = []  # table not migrated yet — nothing to flag
+        for flag in flags:
+            action = str(flag.get("on_due_action") or "warn")
+            msg = (
+                f"**Revalidation due** for `{flag.get('uc_full_name')}` since {flag.get('due_since')} "
+                f"(status: {flag.get('status')}). Re-review of the applicable approval gates is required (§20.5)."
+            )
+            if action in ("block_new_traffic", "block_all_traffic"):
+                st.error(msg + f" Promotions are **blocked** ({action}).", icon="🛑")
+            else:
+                st.warning(msg, icon="⏰")
+
+    risk_tier = responses.get("risk_tier", "")
+    if risk_tier:
+        with st.container(border=True):
+            st.markdown(kv_row("Risk tier", risk_tier, mono=True), unsafe_allow_html=True)
+            packs = responses.get("applied_policy_packs", [])
+            if packs:
+                st.markdown(kv_row("Policy packs", ", ".join(packs), mono=True), unsafe_allow_html=True)
+            tier_just = responses.get("risk_tier_justification", "")
+            if tier_just:
+                st.markdown(kv_row("Justification", tier_just), unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
 
@@ -264,7 +305,8 @@ def _governance_tab(config: dict | None) -> None:
             )
             st.markdown(kv_row("Max disparity", f"{threshold}%"), unsafe_allow_html=True)
             st.markdown(
-                '<span style="font-size:12px;color:#64748b;display:block;padding:8px 0 4px">Tests that will run:</span>',
+                '<span style="font-size:12px;color:#64748b;display:block;'
+                'padding:8px 0 4px">Tests that will run:</span>',
                 unsafe_allow_html=True,
             )
             for test in ["Demographic parity", "Equalized odds", "Calibration"]:
@@ -279,22 +321,27 @@ def _governance_tab(config: dict | None) -> None:
         acceptable = responses.get("data_quality_acceptable_issues", [])
         with st.container(border=True):
             st.markdown(
-                '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:#64748b">Must pass quality checks</span>',
+                '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
+                'letter-spacing:.12em;color:#64748b">Must pass quality checks</span>',
                 unsafe_allow_html=True,
             )
             for col in required or ["All columns"]:
                 st.markdown(
-                    f"<div style=\"font-size:13px;color:#a9b6cc;font-family:'JetBrains Mono',monospace;padding:4px 0\">· {col}</div>",
+                    f"<div style=\"font-size:13px;color:#a9b6cc;"
+                    f"font-family:'JetBrains Mono',monospace;padding:4px 0\">· {col}</div>",
                     unsafe_allow_html=True,
                 )
             if acceptable:
                 st.markdown(
-                    '<span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:#64748b;display:block;padding-top:12px">Issues acceptable in</span>',
+                    '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
+                    'letter-spacing:.12em;color:#64748b;display:block;'
+                    'padding-top:12px">Issues acceptable in</span>',
                     unsafe_allow_html=True,
                 )
                 for col in acceptable:
                     st.markdown(
-                        f"<div style=\"font-size:13px;color:#64748b;font-family:'JetBrains Mono',monospace;padding:4px 0\">· {col}</div>",
+                        f"<div style=\"font-size:13px;color:#64748b;"
+                        f"font-family:'JetBrains Mono',monospace;padding:4px 0\">· {col}</div>",
                         unsafe_allow_html=True,
                     )
 
@@ -323,7 +370,6 @@ def _drift_tab(project: dict, config: dict | None) -> None:
         responses = {}
 
     feature_columns: list[str] = responses.get("feature_columns", [])
-    target_variable: str = responses.get("target_variable", "")
 
     # Resolve catalog + schema from project infrastructure
     uc_dev = project.get("uc_schema_dev", "")
@@ -713,7 +759,7 @@ def _main() -> None:
     with tab_config:
         _config_tab(config)
     with tab_governance:
-        _governance_tab(config)
+        _governance_tab(config, str(project.get("project_id") or ""))
     with tab_drift:
         _drift_tab(project, config)
     with tab_explain:

@@ -117,6 +117,30 @@ class PortfolioAnalyticsService:
             "multi_consumer_features": int(row.get("multi_consumer_features") or 0),
         }
 
+    # ── Governance coverage (§14.1 ← §20.5): revalidation debt counts here ──
+
+    def revalidation_metrics(self) -> dict[str, Any]:
+        """Models whose policy-pack revalidation window has lapsed. Anything
+        due or still in re-review counts *against* governance coverage —
+        not just "eventually" (§20.5)."""
+        rows = self._state._exec(
+            f"""SELECT status, on_due_action, count(*) AS n
+                FROM {self._tbl("revalidation_flags")}
+                WHERE status IN ('due', 'in_revalidation')
+                GROUP BY status, on_due_action"""
+        )
+        due = sum(int(r["n"]) for r in rows if str(r["status"]) == "due")
+        in_review = sum(int(r["n"]) for r in rows if str(r["status"]) == "in_revalidation")
+        blocked = sum(
+            int(r["n"]) for r in rows if str(r.get("on_due_action") or "") in ("block_new_traffic", "block_all_traffic")
+        )
+        return {
+            "revalidation_due": due,
+            "in_revalidation": in_review,
+            "promotion_blocked": blocked,
+            "governance_coverage_penalty": due + in_review,
+        }
+
     # ── Business impact with comparability (§14.2/§14.4) ────────────────────
 
     def business_impact_rollup(self, days_back: int = 90) -> ImpactRollup:

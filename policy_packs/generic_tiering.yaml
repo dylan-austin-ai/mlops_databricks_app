@@ -1,0 +1,24 @@
+# Shipped default — the only pack installed out of the box (§20.3).
+# The app ships the mechanism, not the framework: orgs copy this file, rename
+# tiers/gates to match SR 11-7, EU AI Act, or any internal framework, and PR
+# it in as their own pack. Reviewed via PR into this repo — GitHub is the
+# source of truth for governance rules, the mlops.policy_packs table is the
+# synced, queryable index (PolicyPackService.sync_packs).
+policy_pack_id: generic_tiering_v1
+name: Generic three-tier risk mechanism
+tiers:
+  tier_1:
+    required_approval_gates: [code_review, business_approval]
+    revalidation_frequency_days: null
+    on_revalidation_due: warn
+    allows_override: true
+  tier_2:
+    required_approval_gates: [code_review, legal_review, business_approval]
+    revalidation_frequency_days: 365
+    on_revalidation_due: warn
+    allows_override: true
+  tier_3:
+    required_approval_gates: [code_review, legal_review, business_approval, security_review]
+    revalidation_frequency_days: 180
+    on_revalidation_due: block_new_traffic
+    allows_override: false

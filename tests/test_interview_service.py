@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import pytest
-
 from services.interview_service import (
-    validate_step,
-    init_session,
-    save_step_data,
-    get_step_data,
-    get_all_responses,
-    set_step,
-    get_step,
-    is_step_complete,
-    completed_steps,
-    to_project_manifest_kwargs,
     TOTAL_STEPS,
+    completed_steps,
+    get_all_responses,
+    get_step,
+    get_step_data,
+    init_session,
+    is_step_complete,
+    save_step_data,
+    set_step,
+    to_project_manifest_kwargs,
+    validate_step,
 )
-
 
 # ── Step 1: Basic Info ────────────────────────────────────────────────────────
 
@@ -226,6 +223,23 @@ class TestStep4:
         data = {**valid_step4, "fairness_threshold_pct": 0}
         errors = validate_step(4, data)
         assert any("threshold" in e.lower() for e in errors)
+
+    def test_risk_tier_required(self, valid_step4):
+        # §20.1: the interview requires a tier; omission must fail, not default
+        data = {k: v for k, v in valid_step4.items() if k != "risk_tier"}
+        errors = validate_step(4, data)
+        assert any("risk tier" in e.lower() for e in errors)
+
+    def test_risk_tier_justification_required(self, valid_step4):
+        # §29.3: governance-consequential field — justification is mandatory
+        data = {**valid_step4, "risk_tier_justification": "   "}
+        errors = validate_step(4, data)
+        assert any("justification" in e.lower() for e in errors)
+
+    def test_at_least_one_policy_pack(self, valid_step4):
+        data = {**valid_step4, "applied_policy_packs": []}
+        errors = validate_step(4, data)
+        assert any("policy pack" in e.lower() for e in errors)
 
 
 # ── Step 5: Deployment ────────────────────────────────────────────────────────

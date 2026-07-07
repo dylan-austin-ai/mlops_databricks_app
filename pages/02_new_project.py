@@ -327,7 +327,10 @@ def _step1() -> None:
         key=_name_key,
         on_change=_sanitize_name,
         placeholder="customer_churn_prediction",
-        help="Auto-corrected to lowercase alphanumeric + underscores on each keystroke. Becomes your GitHub repo name and UC schema prefix.",
+        help=(
+            "Auto-corrected to lowercase alphanumeric + underscores on each keystroke. "
+            "Becomes your GitHub repo name and UC schema prefix."
+        ),
     )
 
     problem_statement = st.text_area(
@@ -714,7 +717,8 @@ def _step3() -> None:
                                 "Reply with ONLY a JSON object mapping column_name -> classification. "
                                 "Be conservative: if in doubt, classify higher."
                             ),
-                            user=f"Columns: {', '.join(feature_columns + ([target_variable] if target_variable else []))}",
+                            user="Columns: "
+                            + ", ".join(feature_columns + ([target_variable] if target_variable else [])),
                         )
                         import json as _json
 
@@ -764,7 +768,7 @@ def _step3() -> None:
 
                             classification_attestations[col] = {
                                 "decision": clf_val,
-                                "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                                "timestamp": _dt.datetime.now(_dt.UTC).isoformat(),
                                 "attested": True,
                             }
                     if col in classification_attestations:
@@ -786,7 +790,8 @@ def _step3() -> None:
                 f'<div style="margin-top:8px;padding:8px 12px;border-radius:4px;background:#111827;'
                 f'border-left:3px solid {color}">'
                 f'<span style="font-size:12px;color:#64748b">Dataset classification: </span>'
-                f'<span style="font-size:13px;font-weight:600;color:{color};text-transform:uppercase">{top_level}</span>'
+                f'<span style="font-size:13px;font-weight:600;color:{color};'
+                f'text-transform:uppercase">{top_level}</span>'
                 f"{flagged_html}</div>",
                 unsafe_allow_html=True,
             )
@@ -827,7 +832,10 @@ def _step3() -> None:
         with pii_check_col:
             if st.button(
                 "🔍 Check columns for PII",
-                help="Send column names to the configured LLM to flag potential PII. Conservative — flags anything suspicious.",
+                help=(
+                    "Send column names to the configured LLM to flag potential PII. "
+                    "Conservative — flags anything suspicious."
+                ),
             ):
                 with st.spinner("Checking columns for PII..."):
                     try:
@@ -979,6 +987,42 @@ def _step4() -> None:
     target_var = step3_data.get("target_variable", "")
     all_columns = all_features + ([target_var] if target_var else [])
 
+    # ── Risk tier (§20.1) — org-authored tier definitions only ────────────────
+    st.markdown("**Model Risk Tier**")
+    st.caption(
+        "Tiers and their required gates come from your org's policy packs (PR-reviewed YAML) — "
+        "the app ships the mechanism, not the framework. This field is never defaulted: "
+        "an explicit choice and a one-line justification are required."
+    )
+    try:
+        from services.policy_pack_service import PolicyPackService
+
+        pack_options = PolicyPackService().pack_options()
+    except Exception as exc:
+        pack_options = {}
+        st.error(f"Policy packs could not be loaded: {exc}", icon="🛑")
+
+    applied_policy_packs = st.multiselect(
+        "Policy packs applied",
+        options=sorted(pack_options),
+        default=[p for p in prev.get("applied_policy_packs", sorted(pack_options)) if p in pack_options],
+        help="Multiple packs may apply; approval gates are the union across packs (§20.2).",
+    )
+    tier_options = sorted({t for p in applied_policy_packs for t in pack_options.get(p, [])})
+    prev_tier = prev.get("risk_tier", "")
+    risk_tier = st.selectbox(
+        "Risk tier",
+        options=tier_options,
+        index=tier_options.index(prev_tier) if prev_tier in tier_options else None,
+        placeholder="Select the org-defined tier…",
+    )
+    risk_tier_justification = st.text_input(
+        "Justification — why this tier?",
+        value=prev.get("risk_tier_justification", ""),
+        placeholder="e.g. Influences credit decisions → high materiality per model risk policy.",
+    )
+    st.markdown("---")
+
     # ── Fairness — always on ───────────────────────────────────────────────────
     st.markdown("**Fairness Testing**")
     st.info(
@@ -1092,8 +1136,9 @@ def _step4() -> None:
             if st.button("🔍 LLM scan for proxies"):
                 with st.spinner("Scanning for proxy variables..."):
                     try:
-                        from services.ai_service import AiService
                         import json as _json
+
+                        from services.ai_service import AiService
 
                         ai = AiService()
                         scan = ai._chat(
@@ -1101,7 +1146,8 @@ def _step4() -> None:
                                 "You are a fairness and bias expert. Given a list of feature column names "
                                 "and protected classes, identify columns that could act as proxies. "
                                 "Return ONLY a JSON array like: "
-                                '[{"column": "zip_code", "protected_classes": ["Race / Ethnicity"], "justification": "..."}, ...]'
+                                '[{"column": "zip_code", "protected_classes": ["Race / Ethnicity"], '
+                                '"justification": "..."}, ...]'
                             ),
                             user=(
                                 f"Features: {', '.join(all_columns)}\n"
@@ -1238,6 +1284,9 @@ def _step4() -> None:
         "data_quality_acceptable_issues": dq_acceptable,
         "fairness_override_requested": fairness_override_requested,
         "protected_attribute_justifications": protected_attribute_justifications,
+        "risk_tier": risk_tier or "",
+        "risk_tier_justification": risk_tier_justification,
+        "applied_policy_packs": applied_policy_packs,
     }
 
     errors = iv.validate_step(4, data)
@@ -1351,7 +1400,8 @@ def _step5() -> None:
 
     if rollback_enabled:
         st.caption(
-            "**Trigger conditions** — rollback fires if ANY checked condition is met. Each trigger has its own threshold config."
+            "**Trigger conditions** — rollback fires if ANY checked condition is met. "
+            "Each trigger has its own threshold config."
         )
         rollback_trigger_types = []
 
@@ -1452,7 +1502,10 @@ def _step5() -> None:
                                     value=float(prev_cfg.get("deviation_pct", 20.0)),
                                     step=1.0,
                                     key=f"rb_{trig_key}_dev",
-                                    help="Rollback fires when prediction distribution deviates this much from baseline.",
+                                    help=(
+                                        "Rollback fires when prediction distribution "
+                                        "deviates this much from baseline."
+                                    ),
                                 )
                             with c2:
                                 trig_cfg["window_minutes"] = st.number_input(
@@ -1491,7 +1544,10 @@ def _step5() -> None:
             shadow_indefinitely = st.checkbox(
                 "Shadow production indefinitely (never graduate to canary)",
                 value=prev.get("shadow_indefinitely", False),
-                help="Model stays in shadow mode permanently — useful for high-risk models where live traffic exposure is never acceptable.",
+                help=(
+                    "Model stays in shadow mode permanently — useful for high-risk models "
+                    "where live traffic exposure is never acceptable."
+                ),
             )
             if not shadow_indefinitely:
                 shadow_mode_duration_days = st.number_input(
@@ -1502,7 +1558,8 @@ def _step5() -> None:
                 )
             else:
                 st.caption(
-                    "No canary graduation — model observes production traffic indefinitely without serving live predictions."
+                    "No canary graduation — model observes production traffic indefinitely "
+                    "without serving live predictions."
                 )
 
     with col6:
@@ -2031,6 +2088,23 @@ def _create_project(all_responses: dict, s1: dict) -> None:
                 created_by=owner_email,
             )
             svc.update_project_status(project_id, "development", owner_email)
+
+            # §20.1: record tier + packs on the project row (audited); sync
+            # keeps mlops.policy_packs consistent with the YAML source of truth
+            try:
+                from services.policy_pack_service import PolicyPackService
+
+                policy = PolicyPackService(state=svc)
+                policy.sync_packs()
+                policy.assign_to_project(
+                    project_id,
+                    risk_tier=all_responses.get("risk_tier", ""),
+                    pack_ids=all_responses.get("applied_policy_packs", []),
+                    justification=all_responses.get("risk_tier_justification", ""),
+                    actor_email=owner_email,
+                )
+            except Exception as exc:
+                st.warning(f"Risk tier could not be recorded: {exc}", icon="⚠️")
 
             gen = ProjectInfrastructureGenerator(cfg)
             gen_result = gen.generate(project_name, owner_email, all_responses)

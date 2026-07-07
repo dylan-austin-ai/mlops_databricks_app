@@ -101,3 +101,27 @@ class TestReuseAndCost:
         sql, params = state.execs[0]
         assert "GROUP BY project_id" in sql
         assert params["days_back"] == 7
+
+
+class TestRevalidationMetrics:
+    def test_due_and_in_review_count_against_coverage(self, svc, state):
+        # §20.5: due and in-revalidation both count against governance coverage
+        state.rows = [
+            {"status": "due", "on_due_action": "warn", "n": "2"},
+            {"status": "due", "on_due_action": "block_new_traffic", "n": "1"},
+            {"status": "in_revalidation", "on_due_action": "block_all_traffic", "n": "1"},
+        ]
+        metrics = svc.revalidation_metrics()
+
+        assert metrics == {
+            "revalidation_due": 3,
+            "in_revalidation": 1,
+            "promotion_blocked": 2,
+            "governance_coverage_penalty": 4,
+        }
+        sql, _ = state.execs[0]
+        assert "revalidation_flags" in sql
+
+    def test_clean_portfolio_has_no_penalty(self, svc, state):
+        state.rows = []
+        assert svc.revalidation_metrics()["governance_coverage_penalty"] == 0

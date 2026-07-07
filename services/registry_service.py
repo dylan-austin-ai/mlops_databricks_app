@@ -63,6 +63,11 @@ class RegistryService:
     def alias_version(self, uc_full_name: str, alias: str) -> int | None:
         return self.alias_map(uc_full_name).get(alias)
 
+    def version_tags(self, uc_full_name: str, version: int) -> dict[str, str]:
+        """§7.4 audit tags on a model version, straight from UC."""
+        mv = self._client().get_model_version(name=uc_full_name, version=str(version))
+        return dict(getattr(mv, "tags", None) or {})
+
     # ── promotion (§7.2 / §7.4) ───────────────────────────────────────────────
 
     def promote(
