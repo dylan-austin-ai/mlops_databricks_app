@@ -144,6 +144,22 @@ class TestScaffoldCode:
         assert (path / "resources" / "model_serving.yml").is_file()
         assert not (path / "src" / "batch_score.py").exists()
 
+    def test_streaming_scaffold_renders_continuous_scorer(self, cfg):
+        path, result = _scaffold(
+            cfg,
+            inference_type="streaming",
+            batch_schedule="",
+            streaming_source_table="mlops.demo_streaming.events",
+        )
+        assert result.steps[0]["status"] == "ok"
+        scorer = path / "src" / "stream_score.py"
+        assert scorer.is_file()
+        assert not (path / "src" / "batch_score.py").exists()
+        assert not (path / "resources" / "model_serving.yml").exists()
+        jobs_yml = (path / "resources" / "jobs.yml").read_text()
+        assert "continuous:" in jobs_yml
+        assert "mlops.demo_streaming.events" in jobs_yml
+
     def test_writes_mlops_platform_files(self, cfg):
         path, _ = _scaffold(cfg)
         manifest_hash = (path / ".mlops" / "manifest_hash.txt").read_text().strip()

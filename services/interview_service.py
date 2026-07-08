@@ -145,7 +145,7 @@ class Step1BasicInfo(BaseModel):
 
 
 class Step2ModelSpecs(BaseModel):
-    inference_type: Literal["batch", "real_time", "both"]
+    inference_type: Literal["batch", "real_time", "both", "streaming"]
     # Batch
     batch_frequency: Literal["hourly", "daily", "weekly", "monthly", "quarterly"] | None = None
     batch_schedule: str | None = None  # full cron expression including time
@@ -153,6 +153,9 @@ class Step2ModelSpecs(BaseModel):
     sla_latency_ms: int | None = None
     sla_uptime_pct: float | None = None  # default 99.99
     expected_qps: int | None = None
+    # Streaming — the scorer reads an existing governed table; it never
+    # authors the upstream pipeline (§9.4 boundary)
+    streaming_source_table: str | None = None
     # Frameworks — multi-select
     model_frameworks: list[str] = []
 
@@ -165,6 +168,13 @@ class Step2ModelSpecs(BaseModel):
                 raise ValueError("sla_latency_ms is required for real-time inference.")
             if self.sla_uptime_pct is None:
                 raise ValueError("sla_uptime_pct is required for real-time inference.")
+        if self.inference_type == "streaming":
+            parts = (self.streaming_source_table or "").split(".")
+            if len(parts) != 3 or not all(parts):
+                raise ValueError(
+                    "streaming_source_table is required for streaming inference and "
+                    "must be fully qualified: catalog.schema.table."
+                )
         if not self.model_frameworks:
             raise ValueError("Select at least one model framework.")
         return self

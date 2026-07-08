@@ -415,13 +415,14 @@ def _step2() -> None:
     st.markdown("**How will this model make predictions?**")
     inference_type = st.radio(
         "Inference type *",
-        options=["batch", "real_time", "both"],
+        options=["batch", "real_time", "both", "streaming"],
         format_func=lambda x: {
             "batch": "Batch — score large datasets on a schedule",
             "real_time": "Real-time — REST API with low-latency requirements",
             "both": "Both — batch jobs and a real-time endpoint",
+            "streaming": "Streaming — continuously score an existing governed stream/table",
         }[x],
-        index=["batch", "real_time", "both"].index(prev.get("inference_type", "batch")),
+        index=["batch", "real_time", "both", "streaming"].index(prev.get("inference_type", "batch")),
         label_visibility="collapsed",
     )
 
@@ -489,6 +490,22 @@ def _step2() -> None:
                 help="Drives min/max provisioned throughput for autoscaling.",
             )
             data["expected_qps"] = expected_qps
+
+    # Streaming options
+    if inference_type == "streaming":
+        st.markdown("")
+        st.markdown("**Streaming source**")
+        streaming_source_table = st.text_input(
+            "Source table (catalog.schema.table) *",
+            value=prev.get("streaming_source_table", ""),
+            help=(
+                "Fully qualified Unity Catalog Delta table the continuous scorer reads "
+                "via spark.readStream. The table must already exist and be governed — "
+                "this job scores it, it never authors the upstream ingestion pipeline. "
+                "A data contract applies to the source like any other dataset."
+            ),
+        )
+        data["streaming_source_table"] = streaming_source_table.strip()
 
     st.markdown("---")
     st.markdown("**Model framework(s)**")
@@ -1503,8 +1520,7 @@ def _step5() -> None:
                                     step=1.0,
                                     key=f"rb_{trig_key}_dev",
                                     help=(
-                                        "Rollback fires when prediction distribution "
-                                        "deviates this much from baseline."
+                                        "Rollback fires when prediction distribution deviates this much from baseline."
                                     ),
                                 )
                             with c2:

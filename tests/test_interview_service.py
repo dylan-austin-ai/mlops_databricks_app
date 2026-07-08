@@ -93,6 +93,44 @@ class TestStep2:
         errors = validate_step(2, {"inference_type": "batch", "model_frameworks": ["sklearn"]})
         assert any("batch_frequency" in e for e in errors)
 
+    def test_valid_streaming(self):
+        errors = validate_step(
+            2,
+            {
+                "inference_type": "streaming",
+                "streaming_source_table": "bronze.events.clickstream",
+                "model_frameworks": ["sklearn"],
+            },
+        )
+        assert errors == []
+
+    def test_streaming_missing_source_table(self):
+        errors = validate_step(2, {"inference_type": "streaming", "model_frameworks": ["sklearn"]})
+        assert any("streaming_source_table" in e for e in errors)
+
+    def test_streaming_source_table_must_be_three_part(self):
+        for bad in ("events", "schema.events", "a.b.c.d", "a..c"):
+            errors = validate_step(
+                2,
+                {
+                    "inference_type": "streaming",
+                    "streaming_source_table": bad,
+                    "model_frameworks": ["sklearn"],
+                },
+            )
+            assert any("catalog.schema.table" in e for e in errors), bad
+
+    def test_streaming_needs_no_batch_or_sla_fields(self):
+        errors = validate_step(
+            2,
+            {
+                "inference_type": "streaming",
+                "streaming_source_table": "mlops.demo_streaming.events",
+                "model_frameworks": ["xgboost"],
+            },
+        )
+        assert errors == []
+
     def test_realtime_missing_latency(self):
         errors = validate_step(
             2,
