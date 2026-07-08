@@ -203,9 +203,10 @@ class BundleService:
             # was captured (§9.1) — governance enforced structurally.
             "route_optimized": not route_override,
             "inference_capture": not capture_override,
-            # First deploy serves version 1; promotion re-points via the registry
-            # service. "@champion" in entity_version is unverified against the
-            # live API — confirm at Week 2 before relying on it (design tenet 8).
+            # First deploy serves version 1. Live-verified 2026-07-07
+            # (DECISIONS_NEEDED #3): entity_version rejects UC aliases
+            # ("Entity version must be a number"), so this stays numeric and
+            # promotion updates the endpoint config (saga step 6).
             "champion_version": interview_responses.get("champion_version", "1"),
         }
 

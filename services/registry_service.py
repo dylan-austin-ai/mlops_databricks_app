@@ -39,9 +39,10 @@ class AliasMove:
 
 
 class RegistryService:
-    def __init__(self, config: AppConfig | None = None, client: Any = None) -> None:
+    def __init__(self, config: AppConfig | None = None, client: Any = None, ws_client: Any = None) -> None:
         self._cfg = config or get_config()
         self._client_override = client  # injectable for tests
+        self._ws_override = ws_client  # injectable for tests
 
     def _client(self) -> Any:
         if self._client_override is not None:
@@ -51,6 +52,13 @@ class RegistryService:
 
         mlflow.set_registry_uri("databricks-uc")
         return MlflowClient()
+
+    def _ws(self) -> Any:
+        if self._ws_override is not None:
+            return self._ws_override
+        from databricks.sdk import WorkspaceClient
+
+        return WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token)
 
     # ── reads ─────────────────────────────────────────────────────────────────
 
@@ -159,6 +167,59 @@ class RegistryService:
             previous_version=current,
             tags_written=tags,
         )
+
+    # ── serving endpoint version (§15.2 step 6) ──────────────────────────────
+
+    def update_champion_serving_version(self, endpoint_name: str, version: int) -> bool | None:
+        """Point the endpoint's champion served entity at a numeric version.
+
+        Live-verified 2026-07-07 (DECISIONS_NEEDED #3): entity_version rejects
+        UC aliases ("Entity version must be a number"), so re-pointing
+        @champion alone never moves traffic — promotion must update the
+        endpoint config too.
+
+        Returns True on update, None when the endpoint doesn't exist (batch/
+        streaming projects have no serving endpoint — callers record skipped).
+        """
+        ws = self._ws()
+        try:
+            ep = ws.serving_endpoints.get(name=endpoint_name)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "does not exist" in msg or "not found" in msg or "resource_does_not_exist" in msg:
+                return None
+            raise
+
+        from databricks.sdk.service.serving import ServedEntityInput
+
+        current = ep.config or ep.pending_config
+        entities: list[Any] = []
+        champion_found = False
+        for se in (current.served_entities or []) if current else []:
+            entity_version = se.entity_version
+            if se.name == "champion":
+                entity_version = str(version)
+                champion_found = True
+            entities.append(
+                ServedEntityInput(
+                    name=se.name,
+                    entity_name=se.entity_name,
+                    entity_version=entity_version,
+                    workload_size=se.workload_size,
+                    scale_to_zero_enabled=se.scale_to_zero_enabled,
+                )
+            )
+        if not champion_found:
+            raise RegistryServiceError(
+                f"endpoint {endpoint_name!r} has no served entity named 'champion' — "
+                "refusing to guess which entity to update."
+            )
+        ws.serving_endpoints.update_config(
+            name=endpoint_name,
+            served_entities=entities,
+            traffic_config=current.traffic_config if current else None,
+        )
+        return True
 
     # ── cross-catalog registration (§7.2 promotion between env catalogs) ────
 

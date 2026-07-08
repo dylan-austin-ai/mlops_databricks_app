@@ -18,7 +18,14 @@ Step semantics per §15.2:
   5. canary window         pluggable check; on breach: compensate step 4,
                            no promotion. Default when no monitoring is attached
                            yet: skip with a logged reason — never silently pass.
-  6. promote @champion     on failure: manual rollback runbook alert
+  6. promote @champion     on failure: manual rollback runbook alert.
+                           Then update the serving endpoint to the numeric
+                           candidate version — live-verified 2026-07-07
+                           (DECISIONS_NEEDED #3) that entity_version rejects
+                           aliases, so the alias move alone never shifts
+                           traffic. No endpoint (batch/streaming): skipped.
+                           On endpoint-update failure: re-point @champion
+                           back (compensate) so registry and traffic agree.
   6.5 assemble model card  failure logs a governance-coverage penalty,
                            never blocks promotion (§12.3)
   7. audit record          always runs
@@ -98,6 +105,7 @@ class PromoteToProductionSaga:
         actor_email: str,
         approval_manifest_hash: str = "",
         fairness_test_result: str = "",
+        serving_endpoint: str = "",
     ) -> SagaResult:
         saga_id = str(uuid.uuid4())
         result = SagaResult(saga_id=saga_id, promoted=False)
@@ -197,6 +205,26 @@ class PromoteToProductionSaga:
                 result.add("promote_champion", "failed", f"manual rollback runbook: {exc}")
                 raise SagaAborted("champion promotion failed — manual runbook") from exc
 
+            # 6 (cont.) — serving endpoints take numeric versions only
+            # (live-verified 2026-07-07, DECISIONS_NEEDED #3: "Entity version
+            # must be a number"), so the alias move alone never shifts traffic
+            endpoint = serving_endpoint or f"{uc_full_name.split('.')[-1]}-prod"
+            try:
+                updated = self._registry.update_champion_serving_version(endpoint, candidate_version)
+                if updated is None:
+                    result.add(
+                        "update_serving_endpoint",
+                        "skipped",
+                        f"no serving endpoint {endpoint!r} — batch/streaming project",
+                    )
+                else:
+                    result.add("update_serving_endpoint", "ok", f"{endpoint} champion → v{candidate_version}")
+            except Exception as exc:
+                self._compensate_champion(uc_full_name, prior_champion, result)
+                result.add("update_serving_endpoint", "failed", str(exc))
+                result.promoted = False
+                raise SagaAborted("endpoint version update failed — champion re-pointed back; manual runbook") from exc
+
             # 6.5 — model card assembly: never blocks promotion (§12.3)
             try:
                 card_path = assemble_model_card(
@@ -245,6 +273,20 @@ class PromoteToProductionSaga:
             result.add("set_challenger_canary", "compensated", "challenger alias removed")
         except Exception as exc:
             result.add("set_challenger_canary", "failed", f"compensation failed: {exc}")
+
+    def _compensate_champion(self, uc_full_name: str, prior_champion: int | None, result: SagaResult) -> None:
+        """Endpoint update failed after the alias moved: re-point @champion so
+        the registry and live traffic agree again (fail closed)."""
+        try:
+            client = self._registry._client()
+            if prior_champion is None:
+                client.delete_registered_model_alias(name=uc_full_name, alias=CHAMPION)
+                result.add("promote_champion", "compensated", "first promotion — champion alias removed")
+            else:
+                client.set_registered_model_alias(name=uc_full_name, alias=CHAMPION, version=prior_champion)
+                result.add("promote_champion", "compensated", f"champion re-pointed to v{prior_champion}")
+        except Exception as exc:
+            result.add("promote_champion", "failed", f"compensation failed: {exc}")
 
 
 def make_default_canary_check(

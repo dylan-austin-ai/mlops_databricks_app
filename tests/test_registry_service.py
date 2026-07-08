@@ -51,7 +51,49 @@ class FakeMlflowClient:
         return SimpleNamespace(version="1")
 
 
+class FakeServingEndpoints:
+    """In-memory stand-in for WorkspaceClient.serving_endpoints."""
+
+    def __init__(self, endpoints: dict | None = None, fail_update: bool = False):
+        self.endpoints = endpoints or {}
+        self.fail_update = fail_update
+        self.updates: list[tuple] = []
+
+    def get(self, name):
+        if name not in self.endpoints:
+            raise RuntimeError(f"Endpoint with name '{name}' does not exist")
+        return self.endpoints[name]
+
+    def update_config(self, name, served_entities=None, traffic_config=None):
+        if self.fail_update:
+            raise RuntimeError("serving config update failed")
+        self.updates.append((name, served_entities, traffic_config))
+
+
+class FakeWorkspaceClient:
+    def __init__(self, endpoints: dict | None = None, fail_update: bool = False):
+        self.serving_endpoints = FakeServingEndpoints(endpoints, fail_update)
+
+
 MODEL = "retention_churn_prod.ml.churn"
+
+
+def _endpoint(entity_name: str = MODEL, version: str = "1") -> SimpleNamespace:
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            served_entities=[
+                SimpleNamespace(
+                    name="champion",
+                    entity_name=entity_name,
+                    entity_version=version,
+                    workload_size="Small",
+                    scale_to_zero_enabled=True,
+                )
+            ],
+            traffic_config=None,
+        ),
+        pending_config=None,
+    )
 
 
 @pytest.fixture
@@ -139,3 +181,43 @@ class TestReadsAndCopy:
         version = svc.copy_version_to_catalog("models:/retention_churn_staging.ml.churn/3", MODEL)
         assert version == 1
         assert client.copies == [("models:/retention_churn_staging.ml.churn/3", MODEL)]
+
+
+class TestUpdateChampionServingVersion:
+    """Live-verified 2026-07-07: entity_version rejects aliases (numeric-only)."""
+
+    def test_updates_champion_entity_to_numeric_version(self, cfg, client):
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()})
+        svc = RegistryService(config=cfg, client=client, ws_client=ws)
+
+        assert svc.update_champion_serving_version("churn-prod", 7) is True
+
+        name, entities, _ = ws.serving_endpoints.updates[0]
+        assert name == "churn-prod"
+        champion = next(e for e in entities if e.name == "champion")
+        assert champion.entity_version == "7"
+        assert champion.entity_name == MODEL
+
+    def test_returns_none_when_endpoint_missing(self, cfg, client):
+        svc = RegistryService(config=cfg, client=client, ws_client=FakeWorkspaceClient())
+        assert svc.update_champion_serving_version("churn-prod", 7) is None
+
+    def test_raises_when_no_champion_entity(self, cfg, client):
+        ep = _endpoint()
+        ep.config.served_entities[0].name = "challenger"
+        ws = FakeWorkspaceClient({"churn-prod": ep})
+        svc = RegistryService(config=cfg, client=client, ws_client=ws)
+
+        with pytest.raises(RegistryServiceError, match="champion"):
+            svc.update_champion_serving_version("churn-prod", 7)
+
+    def test_propagates_non_notfound_errors(self, cfg, client):
+        class Boom:
+            def get(self, name):
+                raise RuntimeError("500 internal error")
+
+        ws = SimpleNamespace(serving_endpoints=Boom())
+        svc = RegistryService(config=cfg, client=client, ws_client=ws)
+
+        with pytest.raises(RuntimeError, match="500"):
+            svc.update_champion_serving_version("churn-prod", 7)

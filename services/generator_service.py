@@ -450,9 +450,18 @@ if __name__ == "__main__":
     def _create_mlflow_experiment(self, project_name: str, result: GenerationResult) -> None:
         try:
             import mlflow
+            from databricks.sdk import WorkspaceClient
 
             mlflow.set_tracking_uri("databricks")
             experiment_path = f"/Shared/mlops/{project_name}"
+
+            # MLflow does not create parent workspace directories — found live
+            # 2026-07-07: /Shared/mlops missing makes create_experiment 404
+            ws = WorkspaceClient(
+                host=self._cfg.databricks_host,
+                token=self._cfg.databricks_token,
+            )
+            ws.workspace.mkdirs("/Shared/mlops")
 
             existing = mlflow.get_experiment_by_name(experiment_path)
             if existing:

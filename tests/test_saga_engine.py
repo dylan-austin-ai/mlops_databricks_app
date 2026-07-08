@@ -15,7 +15,7 @@ from services.saga_engine import (
     handle_approved_revocation,
 )
 from tests.test_approval_service import FakeState
-from tests.test_registry_service import FakeMlflowClient
+from tests.test_registry_service import FakeMlflowClient, FakeWorkspaceClient, _endpoint
 
 
 class PrefixFakeState(FakeState):
@@ -76,8 +76,14 @@ def _approved_approval(tmp_path, **overrides) -> dict:
     return base
 
 
-def _saga(cfg, state, bundles=None, client=None, canary=None, policy=None) -> PromoteToProductionSaga:
-    registry = RegistryService(config=cfg, client=client or FakeMlflowClient())
+def _saga(cfg, state, bundles=None, client=None, canary=None, policy=None, ws=None) -> PromoteToProductionSaga:
+    registry = RegistryService(
+        config=cfg,
+        client=client or FakeMlflowClient(),
+        # Default: no serving endpoint exists → step 6's endpoint update is
+        # skipped, matching a batch/streaming project
+        ws_client=ws or FakeWorkspaceClient(),
+    )
     return PromoteToProductionSaga(
         state=state,
         bundles=bundles or FakeBundles(),
@@ -301,6 +307,62 @@ class TestPolicyPackGates:
         result = _run(saga, tmp_path)
 
         assert result.promoted is True
+
+
+class TestServingEndpointUpdate:
+    """Step 6 (cont.): entity_version is numeric-only (live-verified 2026-07-07,
+    DECISIONS_NEEDED #3), so promotion must re-point the endpoint config too."""
+
+    def _setup(self, cfg, tmp_path, ws, with_prior_champion=True):
+        state = FakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        client = FakeMlflowClient()
+        if with_prior_champion:
+            client.set_registered_model_alias(MODEL, CHAMPION, 1)
+        return _saga(cfg, state, client=client, ws=ws), client
+
+    def test_endpoint_updated_to_candidate_version(self, cfg, tmp_path):
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()})
+        saga, client = self._setup(cfg, tmp_path, ws)
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True
+        step = next(s for s in result.steps if s.name == "update_serving_endpoint")
+        assert step.status == "ok"
+        _, entities, _ = ws.serving_endpoints.updates[0]
+        champion = next(e for e in entities if e.name == "champion")
+        assert champion.entity_version == "2"
+
+    def test_no_endpoint_skips_and_still_promotes(self, cfg, tmp_path):
+        saga, client = self._setup(cfg, tmp_path, FakeWorkspaceClient())
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True
+        step = next(s for s in result.steps if s.name == "update_serving_endpoint")
+        assert step.status == "skipped"
+
+    def test_update_failure_compensates_champion(self, cfg, tmp_path):
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()}, fail_update=True)
+        saga, client = self._setup(cfg, tmp_path, ws)
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is False
+        assert client.aliases[MODEL][CHAMPION] == 1  # re-pointed back
+        step = next(s for s in result.steps if s.name == "update_serving_endpoint")
+        assert step.status == "failed"
+        assert any(s.name == "promote_champion" and s.status == "compensated" for s in result.steps)
+
+    def test_first_promotion_update_failure_removes_champion_alias(self, cfg, tmp_path):
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()}, fail_update=True)
+        saga, client = self._setup(cfg, tmp_path, ws, with_prior_champion=False)
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is False
+        assert CHAMPION not in client.aliases.get(MODEL, {})
 
 
 class TestModelCard:
