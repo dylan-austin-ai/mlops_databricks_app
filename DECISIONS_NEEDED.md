@@ -6,6 +6,28 @@ note it here (or just tell the build session) — several change code paths.
 
 ---
 
+## Owner decisions 2026-07-07 (evening, third session) — all six approved
+
+1. **Build order:** phase 10 (streaming, against the synthetic source) next,
+   then phase 13 (capacity service + control-plane budget). Phases 12/14/15
+   deferred until their trigger events (regulated deployment; external API
+   consumers) are actually planned.
+2. **`@champion` verification (item #3):** scratch serving-endpoint
+   deploy → read-back → destroy cycle approved to settle whether
+   `entity_version` accepts the alias.
+3. **Control-plane budget (phase 13):** ship config-driven
+   (`MLOPS_CONTROL_PLANE_BUDGET_WARN/_CRIT`) with placeholder defaults
+   $50/$100 per month, marked PLACEHOLDER in the UI.
+4. **Model Serving quota conversation (item #5):** deferred — no double-digit
+   real-time model count planned; capacity service (phase 13) will flag
+   pressure first.
+5. **De novo baseline:** 10-day placeholder stands until 2–3 real (non-demo)
+   projects exist to measure.
+6. **Cost figures:** list prices stand; revisit only when absolute dollars go
+   to a budget owner.
+
+---
+
 ## 1. ~~Databricks workspace~~ — RESOLVED 2026-07-07 (second session)
 
 Serverless capacity freed up; warehouse verified RUNNING. Migrations 001–010
@@ -75,7 +97,22 @@ deployed yet).
 
 ---
 
-## 3. Can serving endpoints route on `@champion`, or numeric versions only?
+## 3. ~~Can serving endpoints route on `@champion`?~~ — RESOLVED 2026-07-07: numeric-only
+
+Live-probed (scripts/verify_champion_alias.py, owner-approved scratch deploy):
+the Model Serving API rejects aliases in `entity_version` — **"Entity version
+must be a number."** Consequence implemented the same day: saga step 6 now
+updates the serving endpoint's champion entity to the numeric candidate
+version after the alias move, with champion re-point compensation on failure
+(`RegistryService.update_champion_serving_version`). Batch/streaming projects
+(no endpoint) record the step as skipped.
+
+Follow-up noted, not built: endpoint-level canary *traffic splits* (step 4)
+would likewise need served-entity config updates; today's canary is
+metrics-based (step-6 default check), so nothing is inconsistent — revisit
+when real traffic-split canaries are wanted. Original context follows.
+
+## 3-old. Can serving endpoints route on `@champion`, or numeric versions only?
 
 §7.2 shows `entity_version: "@champion"` in the serving config. The bundle
 schema accepts any string, but I could not verify the *API* accepts an alias

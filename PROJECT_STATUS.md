@@ -26,6 +26,33 @@ Wizard scaffold path (DECISIONS_NEEDED #4, approved 2026-07-07) cut over:
 **264 tests passing** (was 259; +5 scaffold tests: real template render,
 serving variant, .mlops files + script compile, git init, failure path).
 
+**Evening (same session) — owner approved all six punch-list decisions;
+phase 10 built + two live verifications:**
+
+- **Phase 10 (streaming) DONE** — the gap was wizard-side only (bundle layer
+  was already streaming-ready): step 2 gains the `streaming` inference type
+  with a required, three-part-validated `streaming_source_table`; §9.4
+  boundary in the help text. **Live round-trip passed**
+  (`scripts/verify_live_streaming.py`): synthetic-source precheck → generate →
+  validate → plan → deploy → SDK read-back incl. continuous-trigger
+  confirmation (UNPAUSED) → destroy. Synthetic-source caveat stands: re-verify
+  against a real governed stream before production streaming claims.
+- **DECISIONS #3 RESOLVED — `@champion` is numeric-only.** Owner-approved
+  scratch probe (`scripts/verify_champion_alias.py`): the serving API rejects
+  aliases in `entity_version` ("Entity version must be a number").
+  Consequence implemented: saga step 6 updates the endpoint's champion entity
+  to the numeric candidate version after the alias move
+  (`RegistryService.update_champion_serving_version`), champion re-point
+  compensation on failure, skipped for projects without an endpoint.
+- **Live-found fix #4:** MLflow does not create parent workspace directories —
+  `/Shared/mlops` missing made `create_experiment` 404; generator's MLflow
+  step now `mkdirs` first.
+- Remaining §27.2 order per owner decision: phase 13 next; 12/14/15 deferred
+  to their trigger events; quota conversation deferred.
+
+**277 tests passing** (+4 interview streaming validation, +1 streaming
+scaffold, +4 registry endpoint-version, +4 saga endpoint-update).
+
 ---
 
 ## 2026-07-07 second session — live verification DONE, owner decisions executed
@@ -147,11 +174,11 @@ Built per the design doc, one commit per phase (`git log --oneline`):
 
 **214 tests passing** (was 82). Migrations 001–009 queued for `python -m db.setup`.
 
-Remaining §27.2 phases: 10 streaming (gated on a real governed source —
-DECISIONS_NEEDED #6; still no source as of 2026-07-07), ~~11 policy packs +
-revalidation trigger~~ (done 2026-07-07), 12 network hardening, 13 capacity
-service + control-plane budget, 14 API layer, 15 auth cutover to native Apps
-hosting, 16 interview optimizer/telemetry.
+Remaining §27.2 phases: ~~10 streaming~~ (done 2026-07-07 evening, against
+the sanctioned synthetic source), ~~11 policy packs + revalidation trigger~~
+(done 2026-07-07), 13 capacity service + control-plane budget (**next**, per
+owner decision), 12 network hardening / 14 API layer / 15 auth cutover
+(deferred to their trigger events), 16 interview optimizer/telemetry.
 See `DECISIONS_NEEDED.md` for owner decisions, several of which gate these.
 
 **⚠ Live verification still pending** (see the 2026-07-07 workspace note at
