@@ -198,3 +198,111 @@ class TestScaffoldCode:
         assert path is None
         assert result.steps[0]["status"] == "failed"
         assert "template render failed" in result.steps[0]["detail"]
+
+
+class FakeRepo:
+    def __init__(self, name):
+        self.name = name
+        self.clone_url = f"https://github.com/owner/{name}.git"
+        self.html_url = f"https://github.com/owner/{name}"
+
+    def get_branch(self, _name):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(edit_protection=lambda **kwargs: None)
+
+
+class FakeOwner:
+    def __init__(self):
+        self.create_repo_calls: list[dict] = []
+
+    def create_repo(self, **kwargs):
+        self.create_repo_calls.append(kwargs)
+        return FakeRepo(kwargs["name"])
+
+    def get_repo(self, name):
+        return FakeRepo(name)
+
+
+class FakeGithubClient:
+    last_instance: FakeGithubClient | None = None
+
+    def __init__(self, token):
+        self.token = token
+        self.org_requested: str | None = None
+        self.get_user_called = False
+        FakeGithubClient.last_instance = self
+
+    def get_organization(self, name):
+        self.org_requested = name
+        return FakeOwner()
+
+    def get_user(self):
+        self.get_user_called = True
+        return FakeOwner()
+
+
+def _cfg_with_github(github_org: str) -> AppConfig:
+    return AppConfig(
+        databricks_host="https://test.cloud.databricks.com",
+        databricks_token="dapi-test",
+        warehouse_id="wh123",
+        github_token="ghp-test",
+        github_org=github_org,
+    )
+
+
+class TestGithubRepoOwnerResolution:
+    """GITHUB_ORG is optional — a personal GitHub account has no organization
+    to resolve, so an unset org must create the repo under the authenticated
+    user instead of erroring on get_organization()."""
+
+    def test_uses_organization_when_github_org_set(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("github.Github", FakeGithubClient)
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: None)
+        gen = ProjectInfrastructureGenerator(_cfg_with_github("my-org"))
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo("churn_model", "owner@example.com", tmp_path, _responses(), result)
+
+        assert result.steps[0]["status"] == "ok"
+        client = FakeGithubClient.last_instance
+        assert client.org_requested == "my-org"
+        assert client.get_user_called is False
+
+    def test_falls_back_to_authenticated_user_when_org_unset(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("github.Github", FakeGithubClient)
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: None)
+        gen = ProjectInfrastructureGenerator(_cfg_with_github(""))
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo("churn_model", "owner@example.com", tmp_path, _responses(), result)
+
+        assert result.steps[0]["status"] == "ok"
+        client = FakeGithubClient.last_instance
+        assert client.get_user_called is True
+        assert client.org_requested is None
+
+    def test_generate_runs_github_step_without_org(self, monkeypatch, tmp_path):
+        """generate()'s gate on the GitHub step no longer requires github_org."""
+        monkeypatch.setattr("github.Github", FakeGithubClient)
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: None)
+
+        class StubGenerator(ProjectInfrastructureGenerator):
+            def _scaffold_code(self, *a, **k):
+                return tmp_path
+
+            def _create_uc_schemas(self, *a, **k):
+                pass
+
+            def _create_mlflow_experiment(self, *a, **k):
+                pass
+
+            def _create_secret_scope(self, *a, **k):
+                pass
+
+        gen = StubGenerator(_cfg_with_github(""))
+        result = gen.generate("churn_model", "owner@example.com", _responses())
+
+        github_step = next(s for s in result.steps if s["name"] == "github_repo")
+        assert github_step["status"] == "ok"

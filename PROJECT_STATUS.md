@@ -1,6 +1,142 @@
 # MLOps Databricks App — Project Status
 
-**Last updated:** 2026-07-07 (third session)
+**Last updated:** 2026-07-08 (fourth session)
+
+---
+
+## 2026-07-08 fourth session (continued) — deployed as a native Databricks App
+
+Owner asked to test the app hosted inside their own Databricks account, not
+just run locally against it. This is real new ground (design roadmap phase
+15, "auth cutover to native Databricks App hosting," §23) — scoped down
+deliberately: this deploys today's PAT-based app onto native Apps hosting
+as-is, **not** the full OAuth-passthrough-per-user auth model §23 describes.
+That fuller cutover (per-user SSO identity → per-user UC permissions) is
+still open and still gated on real multi-user need; this is a single-owner
+test deployment.
+
+What shipped:
+- Secret scope `mlops_app_secrets` (workspace-level, via SDK — never via CLI
+  args, so tokens never touched bash history) holding `databricks_token` and
+  `github_token`.
+- `app.yaml` — `command: ['streamlit', 'run', 'app.py']`; non-secret config
+  (`DATABRICKS_HOST`, `DATABRICKS_WAREHOUSE_ID`, `MLOPS_CATALOG`,
+  `MLOPS_SCHEMA`, empty `GITHUB_ORG`) as plain `value`s; both tokens bound via
+  `valueFrom` to the secret-scope resources — no plaintext secret anywhere in
+  a file. Verified against current Databricks docs and the installed SDK's
+  `apps.AppResourceSecret`/`AppResource` schema directly (not assumed from
+  training data — the design doc's own stale `databricks apps publish
+  --workspace-url` example in `DATABRICKS_MLOPS_APP_SPECIFICATION.md` doesn't
+  match the current CLI at all, confirming why).
+- App `mlops-databricks-app` created via SDK with both secrets attached as
+  `AppResource` entries (READ permission).
+- Source synced to
+  `/Workspace/Users/dylan.austin.ai@gmail.com/mlops-databricks-app` via
+  `databricks sync --exclude-from .gitignore --exclude .git` — dry-run
+  checked first to confirm `.env` was excluded before the real upload (it
+  was; only `.env.example` went up).
+- Deployed (`w.apps.deploy_and_wait`) — **SUCCEEDED**, app RUNNING, compute
+  ACTIVE, URL responds 200: `https://mlops-databricks-app-7474651926930548.aws.databricksapps.com`
+
+**Not done / worth knowing:**
+- No code changes were needed — `config.py`'s existing `load_dotenv()` +
+  `os.getenv()` pattern reads Apps-injected env vars identically to a local
+  `.env`, and the services still construct `WorkspaceClient(host=, token=)`
+  explicitly rather than relying on Apps' own auto-injected OAuth identity —
+  this is the PAT-based interim, not the §23 end-state.
+- Redeploying after further code changes means re-running `databricks sync`
+  + `w.apps.deploy_and_wait` (or the CLI `databricks apps deploy` equivalent)
+  — no CI/CD or auto-redeploy-on-push is wired up.
+- `app.yaml` has no secrets in it and is safe to commit if the owner wants
+  it tracked (currently untracked, like `db/migrations/011_*.sql` etc. from
+  earlier this session).
+
+---
+
+Per DECISIONS_NEEDED's owner-approved build order (2026-07-07 evening), phase
+13 next: **Capacity Service and control-plane budget (§17.4, §19.2)**.
+
+- `services/capacity_service.py` — new service, sibling to (not merged into)
+  ReconciliationService per §27.2's "run alongside" framing:
+  - `snapshot_capacity()` — counts workspace-wide jobs/serving
+    endpoints/concurrent runs via the SDK, compares endpoint count against
+    `MLOPS_CAPACITY_ENDPOINT_WARN_THRESHOLD` (default 50, §19.2 — no
+    published per-workspace ceiling, so this is an internally-set alert, not
+    a discovered limit), writes a row to `capacity_snapshots`. Write path,
+    meant for the scheduled-job pattern like reconciliation.
+  - `latest_capacity_snapshot()` — cheap read of the most recent row, for
+    Portfolio Analytics to render without hitting the Jobs/Serving Endpoints
+    APIs on every page load.
+  - `reconcile_control_plane_cost()` — MERGEs `system.billing.usage` tagged
+    `component=control_plane` into `control_plane_costs`, dated and keyed
+    like `ReconciliationService.reconcile_costs`'s per-project MERGE, but
+    kept structurally separate from `mlops.cost_tracking` (§17.4 — the
+    control plane's own overhead shouldn't hide inside a project's bill).
+  - `control_plane_budget_status()` — reads the rolled-up cost and compares
+    to `MLOPS_CONTROL_PLANE_BUDGET_WARN`/`_CRIT` (owner-approved placeholder
+    defaults $50/$100 per month, DECISIONS_NEEDED #3, evening 2026-07-07);
+    returned status carries `is_placeholder=True` so callers never present
+    the threshold as a real number.
+- Migration `011_capacity_and_control_plane_budget.sql` — `capacity_snapshots`
+  + `control_plane_costs` tables, same shape/conventions as
+  `006_reconciliation_runs.sql`.
+- `config.py` gains the three env-driven fields above.
+- Portfolio Analytics page (`pages/10_portfolio_analytics.py`) gains a
+  "Workspace capacity & control-plane budget" section: endpoint count vs.
+  threshold with a warning banner at/over threshold, and control-plane
+  30-day cost vs. warn/crit with the PLACEHOLDER caveat surfaced inline.
+**290 tests passing** (was 277; +10 `test_capacity_service.py` — threshold
+boundaries, empty-state reads, MERGE tagging, budget status tiers; +3
+`test_generator_service.py` — GitHub owner resolution, see below).
+
+**Deferred, not built this session** (§19.2 item 3): the documented
+single→multi-workspace "graduation" playbook. The design calls for writing
+it "now, not improvised under pressure later," but no capacity pressure
+exists yet to motivate it and it's a doc, not code — revisit once the
+Capacity Service's own snapshots show sustained pressure, or on request.
+
+**Live-verified against the owner's personal workspace** after a credential
+gap was found and the owner restored `.env` (see incident note below):
+`db.setup` applied migration 011 cleanly (`capacity_snapshots` +
+`control_plane_costs` created, migrations 001–010 correctly skipped as
+already-applied). `CapacityService.snapshot_capacity()` ran for real:
+0 jobs, **15 serving endpoints** (ok, under the 50 warn threshold), 0
+concurrent runs, row written. `reconcile_control_plane_cost()` ran the live
+MERGE against `system.billing.usage`/`list_prices` — 0 rows changed, expected
+since no resource is yet tagged `component=control_plane` (same cold-start
+shape as `reconcile_costs` before any project-tagged spend exists).
+`control_plane_budget_status()` read back correctly: $0.00, ok,
+`is_placeholder=True`.
+
+**GitHub personal-account fix (found while restoring live credentials):**
+`_create_github_repo` unconditionally called `gh.get_organization(GITHUB_ORG)`
+— GitHub's API has no "organization" for a personal account, so this would
+404 for anyone without an org, and `generate()` additionally required
+`GITHUB_ORG` truthy just to attempt the step at all, skipping repo creation
+outright for personal-account users. Fixed: `GITHUB_ORG` is now optional —
+unset, `_create_github_repo` resolves the owner via `gh.get_user()` (the
+authenticated user) instead of `gh.get_organization()`; `generate()`'s gate
+now only requires `GITHUB_TOKEN`. Verified live: the owner's `GITHUB_TOKEN`
+resolves to `dylan-austin-ai` (type `User`), confirming the fallback path is
+exactly what their setup needs. `.env`'s `GITHUB_ORG` set to empty. **+3
+tests** in `test_generator_service.py::TestGithubRepoOwnerResolution`
+(org path, personal-account fallback, `generate()`'s gate no longer requiring
+org).
+
+**Incident note — credential gap found and resolved this session:** partway
+through this session, `.env`'s `DATABRICKS_HOST`/`DATABRICKS_TOKEN`/
+`DATABRICKS_WAREHOUSE_ID`/`GITHUB_TOKEN` were found reverted to
+`.env.example`'s literal placeholder values, and the project's shared `.venv`
+(a symlink to `../mlops_toolkit/.venv`) was separately found missing
+`pytest`. Neither was a change made by this session's tooling. `.env` is
+git-ignored (no history to recover from); root cause of the reset is unknown.
+The owner restored real credentials by hand; `pytest` was reinstalled into
+the shared venv (not pinned in either project's `requirements.txt` — it was
+present ad hoc before, so its disappearance tracks with a from-scratch env
+rebuild). **Open risk, not investigated further this session:** the shared
+venv between `mlops_databricks_app` and `mlops_toolkit` means dependency
+changes in one project can silently affect the other's test tooling — worth
+a look if this recurs.
 
 ---
 

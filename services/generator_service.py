@@ -68,9 +68,9 @@ class ProjectInfrastructureGenerator:
         # Step 1 + 2: scaffold code + push to GitHub
         scaffold_dir = self._scaffold_code(project_name, owner_email, interview_responses, result)
 
-        if scaffold_dir and self._cfg.github_token and self._cfg.github_org:
+        if scaffold_dir and self._cfg.github_token:
             self._create_github_repo(project_name, owner_email, scaffold_dir, interview_responses, result)
-        elif not self._cfg.github_token:
+        else:
             result.add_step("github_repo", "skipped", "GITHUB_TOKEN not set")
 
         # Step 3: UC schemas
@@ -354,13 +354,17 @@ if __name__ == "__main__":
             from github import Github, GithubException
 
             gh = Github(self._cfg.github_token)
-            org = gh.get_organization(self._cfg.github_org)
+            # GITHUB_ORG is optional — GitHub's API has no "organization" for a
+            # personal account, so an unset org creates the repo under the
+            # authenticated user instead (both expose the same create_repo/
+            # get_repo interface).
+            owner = gh.get_organization(self._cfg.github_org) if self._cfg.github_org else gh.get_user()
 
             description = interview_responses.get("problem_statement", "")[:250]
             repo_name = project_name.replace("_", "-")
 
             try:
-                repo = org.create_repo(
+                repo = owner.create_repo(
                     name=repo_name,
                     description=description,
                     private=True,
@@ -368,7 +372,7 @@ if __name__ == "__main__":
                 )
             except GithubException as exc:
                 if exc.status == 422:  # already exists
-                    repo = org.get_repo(repo_name)
+                    repo = owner.get_repo(repo_name)
                 else:
                     raise
 

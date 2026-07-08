@@ -1,0 +1,18 @@
+command: ['streamlit', 'run', 'app.py']
+env:
+  - name: 'DATABRICKS_HOST'
+    value: 'https://dbc-7bed7f90-a25f.cloud.databricks.com'
+  - name: 'DATABRICKS_WAREHOUSE_ID'
+    value: '96a94ab9ab031182'
+  - name: 'MLOPS_CATALOG'
+    value: 'mlops'
+  - name: 'MLOPS_SCHEMA'
+    value: 'mlops'
+  - name: 'GITHUB_ORG'
+    value: ''
+  - name: 'STREAMLIT_GATHER_USAGE_STATS'
+    value: 'false'
+  - name: 'DATABRICKS_TOKEN'
+    valueFrom: 'databricks_token'
+  - name: 'GITHUB_TOKEN'
+    valueFrom: 'github_token'

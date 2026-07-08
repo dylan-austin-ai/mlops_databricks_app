@@ -11,13 +11,15 @@ note it here (or just tell the build session) — several change code paths.
 1. **Build order:** phase 10 (streaming, against the synthetic source) next,
    then phase 13 (capacity service + control-plane budget). Phases 12/14/15
    deferred until their trigger events (regulated deployment; external API
-   consumers) are actually planned.
+   consumers) are actually planned. — **Both phase 10 and phase 13 DONE**
+   (2026-07-07 and 2026-07-08 respectively); see PROJECT_STATUS.md.
 2. **`@champion` verification (item #3):** scratch serving-endpoint
    deploy → read-back → destroy cycle approved to settle whether
    `entity_version` accepts the alias.
 3. **Control-plane budget (phase 13):** ship config-driven
    (`MLOPS_CONTROL_PLANE_BUDGET_WARN/_CRIT`) with placeholder defaults
-   $50/$100 per month, marked PLACEHOLDER in the UI.
+   $50/$100 per month, marked PLACEHOLDER in the UI. — **DONE 2026-07-08**,
+   live-verified against the owner's workspace (`services/capacity_service.py`).
 4. **Model Serving quota conversation (item #5):** deferred — no double-digit
    real-time model count planned; capacity service (phase 13) will flag
    pressure first.

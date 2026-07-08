@@ -41,6 +41,16 @@ def main() -> None:
         st.error(f"Failed to load portfolio metrics: {exc}")
         return
 
+    try:
+        from services.capacity_service import CapacityService
+
+        capacity_svc = CapacityService()
+        capacity = capacity_svc.latest_capacity_snapshot()
+        budget = capacity_svc.control_plane_budget_status()
+    except Exception as exc:
+        st.error(f"Failed to load capacity/budget metrics: {exc}")
+        capacity, budget = None, None
+
     # §14.3: the roadmap phase is an org claim, not a computed metric
     st.caption("Program phase banner: org-configured, not derived from data (§14.3) — set it in Settings.")
 
@@ -112,6 +122,36 @@ def main() -> None:
             "No tagged cost rows yet — costs appear once the Reconciliation Service "
             "runs against a live workspace with project-tagged resources (§17.3)."
         )
+
+    st.markdown("---")
+    st.subheader("Workspace capacity & control-plane budget (§17.4 / §19.2)")
+    col_cap, col_budget = st.columns(2)
+    with col_cap:
+        if capacity:
+            st.metric(
+                "Serving endpoints",
+                f"{capacity.endpoint_count} / {capacity.endpoint_warn_threshold}",
+                help="workspace-wide count vs internally-set alert threshold — no hard limit is published (§19.2)",
+            )
+            st.caption(f"Jobs: {capacity.job_count} · Concurrent runs: {capacity.concurrent_run_count}")
+            if capacity.status == "warning":
+                st.warning(capacity.detail, icon="⚠️")
+        else:
+            st.caption("No capacity snapshot yet — appears once the Capacity Service runs (§19.2).")
+    with col_budget:
+        if budget:
+            label = "Control-plane cost (30d)" + (" · PLACEHOLDER thresholds" if budget.is_placeholder else "")
+            st.metric(
+                label,
+                f"${budget.total_cost_usd:,.2f}",
+                help=f"warn ${budget.warn_threshold_usd:,.0f} / crit ${budget.crit_threshold_usd:,.0f} per month",
+            )
+            if budget.status == "critical":
+                st.error(f"Control-plane spend at/above critical threshold (${budget.crit_threshold_usd:,.0f}/mo).")
+            elif budget.status == "warning":
+                st.warning(f"Control-plane spend at/above warn threshold (${budget.warn_threshold_usd:,.0f}/mo).")
+        else:
+            st.caption("No control-plane cost rows yet — appears once cost reconciliation runs (§17.4).")
 
 
 main()

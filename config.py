@@ -34,6 +34,21 @@ class AppConfig:
     llm_endpoint: str = field(
         default_factory=lambda: os.getenv("DATABRICKS_LLM_ENDPOINT", "databricks-meta-llama-3-1-70b-instruct")
     )
+    # §17.4/§19.2, phase 13: control-plane budget + capacity thresholds.
+    # Owner decision 2026-07-07: ship config-driven with placeholder defaults
+    # ($50/$100 per month) until a real number is set — CapacityService marks
+    # these PLACEHOLDER in the UI rather than presenting them as real limits.
+    control_plane_budget_warn_usd: float = field(
+        default_factory=lambda: float(os.getenv("MLOPS_CONTROL_PLANE_BUDGET_WARN", "50"))
+    )
+    control_plane_budget_crit_usd: float = field(
+        default_factory=lambda: float(os.getenv("MLOPS_CONTROL_PLANE_BUDGET_CRIT", "100"))
+    )
+    # §19.2: no per-workspace Model Serving endpoint limit is published;
+    # this is an internally-set alert threshold, not a hard ceiling.
+    capacity_endpoint_warn_threshold: int = field(
+        default_factory=lambda: int(os.getenv("MLOPS_CAPACITY_ENDPOINT_WARN_THRESHOLD", "50"))
+    )
 
     @property
     def is_connected(self) -> bool:
