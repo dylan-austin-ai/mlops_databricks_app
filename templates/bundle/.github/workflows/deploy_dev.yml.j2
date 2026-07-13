@@ -1,0 +1,57 @@
+{% raw %}
+name: Deploy — dev / staging (QA)
+
+# Owner request 2026-07-13: "DS should be able to deploy endpoints/tables by
+# themselves into QA without friction. The friction only comes when pushing
+# to prod." No approval gate here on purpose — dev/staging are the existing
+# `databricks.yml` bundle targets (this project's schema-per-project
+# convention uses "staging" for what the wizard UI calls "QA"; same tier).
+# Contrast with deploy_prod.yml, which requires check_change_scope.py to
+# pass before it will run.
+#
+# Same credentials guard as deploy_prod.yml (found live 2026-07-13): skips
+# cleanly instead of failing when DATABRICKS_HOST/DATABRICKS_TOKEN repo
+# secrets aren't configured yet, so GitHub doesn't email the pusher on every
+# commit before those secrets exist.
+
+on:
+  push:
+    branches-ignore:
+      - main  # main -> prod only, via deploy_prod.yml
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Bundle target to deploy"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, staging]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Databricks credentials are configured
+        id: creds
+        run: |
+          if [ -z "${{ secrets.DATABRICKS_HOST }}" ] || [ -z "${{ secrets.DATABRICKS_TOKEN }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DATABRICKS_HOST/DATABRICKS_TOKEN repo secrets aren't set yet -- skipping deploy (this is not a failure). Add them under Settings > Secrets and variables > Actions when ready."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Databricks CLI
+        if: steps.creds.outputs.configured == 'true'
+        uses: databricks/setup-cli@main
+
+      - name: Deploy
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: databricks bundle deploy -t ${{ github.event.inputs.target || 'dev' }}
+{% endraw %}

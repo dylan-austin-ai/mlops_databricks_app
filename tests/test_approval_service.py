@@ -20,6 +20,7 @@ class FakeState:
         self.approvals: dict[str, dict] = {}
         self.audits: list[dict] = []
         self.merge_affected = 1
+        self.created_requests: list[dict] = []
 
     def _tbl(self, name: str) -> str:
         return name
@@ -35,6 +36,20 @@ class FakeState:
 
     def log_audit(self, **kwargs):
         self.audits.append(kwargs)
+
+    def create_approval_request(self, model_id, approval_type, approval_gate, requested_by, required_count=1):
+        approval_id = f"generated-{len(self.created_requests)}"
+        self.created_requests.append(
+            {
+                "approval_id": approval_id,
+                "model_id": model_id,
+                "approval_type": approval_type,
+                "approval_gate": approval_gate,
+                "requested_by": requested_by,
+                "required_count": required_count,
+            }
+        )
+        return approval_id
 
 
 @pytest.fixture
@@ -189,3 +204,78 @@ class TestRevocation:
 
         assert outcome.recorded is True
         assert outcome.original_approval_id == "ap1"
+
+
+class NotifyFakeState(FakeState):
+    """FakeState with a canned interview_responses row for the approver
+    contact-email lookup (_notify_approver's SELECT)."""
+
+    def __init__(self, contact_row: dict | None = None):
+        super().__init__()
+        self._contact_row = contact_row
+
+    def _exec(self, sql, params=None):
+        self.execs.append((sql, params))
+        if sql.strip().startswith("SELECT pc.interview_responses"):
+            return [self._contact_row] if self._contact_row is not None else []
+        if sql.strip().upper().startswith("MERGE"):
+            return [{"num_affected_rows": self.merge_affected}]
+        return []
+
+
+class FakeNotifications:
+    def __init__(self):
+        self.sent: list[tuple] = []
+
+    def send(self, destination_config, subject, message):
+        self.sent.append((destination_config, subject, message))
+        return None
+
+
+class TestRequestApproval:
+    """IMG_1412 gap: a new gate never told anyone it existed."""
+
+    def test_creates_gate_and_notifies_configured_contact(self):
+        state = NotifyFakeState({"interview_responses": json.dumps({"legal_contact_email": "legal@co.com"})})
+        notifications = FakeNotifications()
+        svc = ApprovalService(state=state, notifications=notifications)
+
+        approval_id = svc.request_approval("m1", "legal_review", "legal_review", "ds@co.com")
+
+        assert approval_id == "generated-0"
+        assert state.created_requests[0]["model_id"] == "m1"
+        assert len(notifications.sent) == 1
+        dest, subject, message = notifications.sent[0]
+        assert dest == {"destination": "email", "email_addresses": ["legal@co.com"]}
+        assert "Legal Review" in subject
+        assert approval_id in message
+
+    def test_gate_with_no_contact_mapping_skips_notification(self):
+        state = NotifyFakeState()
+        notifications = FakeNotifications()
+        svc = ApprovalService(state=state, notifications=notifications)
+
+        svc.request_approval("m1", "code_review", "code_review", "ds@co.com")
+
+        assert not notifications.sent
+
+    def test_no_contact_email_on_file_skips_notification(self):
+        state = NotifyFakeState({"interview_responses": json.dumps({})})
+        notifications = FakeNotifications()
+        svc = ApprovalService(state=state, notifications=notifications)
+
+        svc.request_approval("m1", "security_scan", "security_scan", "ds@co.com")
+
+        assert not notifications.sent
+
+    def test_notification_failure_never_blocks_gate_creation(self):
+        class ExplodingNotifications:
+            def send(self, *a, **k):
+                raise RuntimeError("smtp down")
+
+        state = NotifyFakeState({"interview_responses": json.dumps({"legal_contact_email": "legal@co.com"})})
+        svc = ApprovalService(state=state, notifications=ExplodingNotifications())
+
+        approval_id = svc.request_approval("m1", "legal_review", "legal_review", "ds@co.com")
+
+        assert approval_id == "generated-0"  # gate still created despite notification blowing up

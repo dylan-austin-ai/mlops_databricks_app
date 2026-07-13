@@ -108,6 +108,23 @@ class TestReuseAndCost:
         assert "GROUP BY project_id" in sql
         assert params["days_back"] == 7
 
+    def test_cost_rollup_grouped_by_team(self, svc, state):
+        state.rows = [{"team_name": "retention_team", "total_usd": "100.0"}]
+        rows = svc.cost_rollup(days_back=7, group_by="team")
+        assert rows[0]["team_name"] == "retention_team"
+        sql, params = state.execs[0]
+        assert "GROUP BY p.team_name" in sql
+        assert "JOIN" in sql and "projects" in sql
+        assert params["days_back"] == 7
+
+    def test_cost_rollup_grouped_by_deployment_type(self, svc, state):
+        state.rows = [{"deployment_type": "real_time", "total_usd": "250.0"}]
+        rows = svc.cost_rollup(days_back=7, group_by="deployment_type")
+        assert rows[0]["deployment_type"] == "real_time"
+        sql, params = state.execs[0]
+        assert "GROUP BY coalesce(latest.inference_type" in sql
+        assert params["days_back"] == 7
+
 
 class TestRevalidationMetrics:
     def test_due_and_in_review_count_against_coverage(self, svc, state):

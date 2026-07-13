@@ -6,6 +6,54 @@ note it here (or just tell the build session) — several change code paths.
 
 ---
 
+## Owner decisions 2026-07-12 (fifth session) — IMG_1412 triage, two items declined
+
+Two of the `IMG_1412.txt` "Not-covered items" were triaged and put to the
+owner rather than built speculatively — both declined:
+
+1. **RACI/ownership matrix page (item #1).** Owner's call: this is a PM
+   responsibility, not an app feature — declined, not built. If this changes
+   later, the closest existing surface to extend would be the project
+   dashboard's governance tab, not a new page.
+2. **Problem intake / prioritization (item #2).** Reaffirmed, not re-decided:
+   the design doc already made this call explicitly (§1, §30 — "which model
+   ideas get built at all is decided upstream of this app"). Raised again
+   during the IMG_1412 triage only to confirm the standing decision still
+   holds; it does.
+
+The other IMG_1412 triage findings ("do these first" list — dead
+`attach_inference_monitor()` wiring, a Notification Delivery Service, the
+dead `budget_alerts`/`data_quality_assessments` tables, `cost_rollup`
+grouping) were built this session — see PROJECT_STATUS.md.
+
+---
+
+## Owner decision 2026-07-12 (fifth session, same-day follow-up) — Budget Policy scope
+
+Asked directly: should the app only *reference* pre-existing Databricks
+Budget Policies (workspace-level access, no new credential), or *create and
+manage* them itself (account-level access, a new and higher-privilege
+credential this app has never needed before)?
+
+**Decided: the app creates and manages policies itself.** Built the same
+session — see PROJECT_STATUS.md's "attribute cost to a Databricks Budget
+Policy" entry. Consequence worth restating plainly: `DATABRICKS_ACCOUNT_HOST`/
+`_ID`/`_CLIENT_ID`/`_CLIENT_SECRET` (an account-level OAuth service
+principal) are new, materially more privileged credentials than the
+workspace token (`DATABRICKS_TOKEN`) this app has used everywhere else to
+date. They're optional — the feature degrades gracefully (skips
+attribution) when unset — but when the owner does set them, whoever holds
+that service principal's secret has account-admin-adjacent reach, not
+workspace-scoped reach. Worth a deliberate choice of *who* holds that
+credential, not just *whether* to set it.
+
+**If nothing:** budget policy attribution stays off; every project's
+`budget_policy_id` stays null and generated bundles omit the field entirely
+(§9.1-style structural default — nothing crashes, cost just isn't
+attributed to a policy).
+
+---
+
 ## Owner decisions 2026-07-07 (evening, third session) — all six approved
 
 1. **Build order:** phase 10 (streaming, against the synthetic source) next,

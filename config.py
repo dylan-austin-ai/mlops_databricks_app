@@ -31,6 +31,18 @@ class AppConfig:
     managed_location: str = field(default_factory=lambda: os.getenv("MLOPS_MANAGED_LOCATION", ""))
     github_token: str = field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
     github_org: str = field(default_factory=lambda: os.getenv("GITHUB_ORG", ""))
+    # Owner request 2026-07-13: when a DS links an existing (rather than
+    # app-created) GitHub repo in Step 1, the app pushes the scaffold into it
+    # only if it's "empty" — root-level entries matching one of these names
+    # are ignored (common org automation: a README/LICENSE/.github stamped in
+    # at repo-creation time), anything else blocks the push.
+    empty_repo_ignore_patterns: list[str] = field(
+        default_factory=lambda: (
+            [p.strip() for p in os.environ["MLOPS_EMPTY_REPO_IGNORE_PATTERNS"].split(",") if p.strip()]
+            if os.getenv("MLOPS_EMPTY_REPO_IGNORE_PATTERNS")
+            else ["README.md", ".gitignore", "LICENSE", ".github"]
+        )
+    )
     llm_endpoint: str = field(
         default_factory=lambda: os.getenv("DATABRICKS_LLM_ENDPOINT", "databricks-meta-llama-3-1-70b-instruct")
     )
@@ -49,10 +61,56 @@ class AppConfig:
     capacity_endpoint_warn_threshold: int = field(
         default_factory=lambda: int(os.getenv("MLOPS_CAPACITY_ENDPOINT_WARN_THRESHOLD", "50"))
     )
+    # Notification Delivery Service (IMG_1412 gap: alerts/approver-notify/HITL
+    # escalation only ever wrote DB rows, never reached anyone). One admin-set
+    # credential per channel — the wizard only ever collects a channel_name or
+    # recipient list, never a raw webhook URL/SMTP secret, per the app's usual
+    # secrets-live-in-config convention (§16). Unset = that channel reports
+    # not_configured rather than failing.
+    smtp_host: str = field(default_factory=lambda: os.getenv("MLOPS_SMTP_HOST", ""))
+    smtp_port: int = field(default_factory=lambda: int(os.getenv("MLOPS_SMTP_PORT", "587")))
+    smtp_user: str = field(default_factory=lambda: os.getenv("MLOPS_SMTP_USER", ""))
+    smtp_password: str = field(default_factory=lambda: os.getenv("MLOPS_SMTP_PASSWORD", ""))
+    smtp_from_email: str = field(default_factory=lambda: os.getenv("MLOPS_SMTP_FROM_EMAIL", ""))
+    slack_webhook_url: str = field(default_factory=lambda: os.getenv("MLOPS_SLACK_WEBHOOK_URL", ""))
+    teams_webhook_url: str = field(default_factory=lambda: os.getenv("MLOPS_TEAMS_WEBHOOK_URL", ""))
+    # Budget Policy attribution (owner request, 2026-07-12): per-project cost
+    # attribution via Databricks' native serverless Budget Policy feature
+    # (confirmed live against the pinned CLI's bundle schema — `budget_policy_id`
+    # is a top-level [Public Preview] field on jobs and model serving endpoints,
+    # both of which this app already generates serverless-only, §17.1). Policy
+    # *creation* is an account-level API (AccountClient), a materially
+    # different, higher-privilege credential than the workspace token this app
+    # otherwise only ever needs — kept as its own credential group, entirely
+    # optional (BudgetPolicyService degrades gracefully when unset, same
+    # posture as MonitoringService/§25).
+    databricks_account_host: str = field(default_factory=lambda: os.getenv("DATABRICKS_ACCOUNT_HOST", ""))
+    databricks_account_id: str = field(default_factory=lambda: os.getenv("DATABRICKS_ACCOUNT_ID", ""))
+    databricks_account_client_id: str = field(default_factory=lambda: os.getenv("DATABRICKS_ACCOUNT_CLIENT_ID", ""))
+    databricks_account_client_secret: str = field(
+        default_factory=lambda: os.getenv("DATABRICKS_ACCOUNT_CLIENT_SECRET", "")
+    )
+    # Owner decision 2026-07-12: pre-set an existing policy id here to use it
+    # as-is, or leave it blank and set only the name — BudgetPolicyService
+    # creates the named policy once (idempotent, by name) and this ID is
+    # effectively "whatever ensure_default_policy() resolves to" from then on.
+    default_budget_policy_id: str = field(default_factory=lambda: os.getenv("MLOPS_DEFAULT_BUDGET_POLICY_ID", ""))
+    default_budget_policy_name: str = field(
+        default_factory=lambda: os.getenv("MLOPS_DEFAULT_BUDGET_POLICY_NAME", "mlops-control-plane-default")
+    )
 
     @property
     def is_connected(self) -> bool:
         return bool(self.databricks_host and self.databricks_token and self.warehouse_id)
+
+    @property
+    def has_account_credentials(self) -> bool:
+        return bool(
+            self.databricks_account_host
+            and self.databricks_account_id
+            and self.databricks_account_client_id
+            and self.databricks_account_client_secret
+        )
 
     @property
     def mlops_schema_prefix(self) -> str:

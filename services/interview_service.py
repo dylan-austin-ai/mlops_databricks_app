@@ -110,6 +110,7 @@ class Step1BasicInfo(BaseModel):
     success_metric: str
     team_name: str
     owner_email: str
+    existing_repo_url: str = ""  # optional — blank = app creates a new repo
 
     @field_validator("project_name")
     @classmethod
@@ -141,6 +142,16 @@ class Step1BasicInfo(BaseModel):
         v = v.strip().lower()
         if "@" not in v or "." not in v.split("@")[-1]:
             raise ValueError("Enter a valid email address.")
+        return v
+
+    @field_validator("existing_repo_url")
+    @classmethod
+    def validate_existing_repo_url(cls, v: str) -> str:
+        # Same pattern generator_service.py parses at provisioning time —
+        # kept in sync deliberately so a URL that passes here won't fail there.
+        v = v.strip()
+        if v and not re.match(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", v):
+            raise ValueError("Must be a https://github.com/<owner>/<repo> URL, or left blank.")
         return v
 
 

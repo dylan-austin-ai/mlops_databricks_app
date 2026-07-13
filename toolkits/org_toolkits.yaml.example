@@ -1,0 +1,25 @@
+# Org-authored toolkit auto-import config. Rename this file to drop the
+# `.example` suffix (e.g. `org_toolkits.yaml`) to activate it — inert until
+# then, same convention as policy_packs' org customization file used before
+# generic tiering became the permanent default. Reviewed via PR like any
+# other governance-adjacent config in this repo — GitHub is the source of
+# truth, not a wizard field or .env value (owner decision 2026-07-13).
+#
+# Every entry here gets:
+#   - its pip_spec added to the generated project's requirements.txt
+#   - its import_statement injected at the top of train.py and eda.py
+#
+# This app ships with zero toolkits configured by default (there is no
+# universal "generic" internal package) — each org fills in their own here.
+# Multiple entries are fine; order is preserved in generated files.
+
+toolkits:
+  - toolkit_id: mlops_toolkit
+    name: "Acme MLOps Toolkit"
+    pip_spec: "acme-mlops-toolkit>=2.0"
+    import_statement: "import acme_mlops_toolkit as mlops"
+
+  - toolkit_id: ds_toolkit
+    name: "Acme Data Science Toolkit"
+    pip_spec: "git+https://github.com/acme-corp/ds-toolkit.git@main"
+    import_statement: "from acme_ds_toolkit import eda, features as ds_features"

@@ -1,0 +1,90 @@
+{% raw %}
+name: Deploy — prod
+
+# Owner request 2026-07-13: "friction should be reserved for deployment to
+# prod via CI/CD" — contrast with deploy_dev.yml, which has no gate at all.
+#
+# The gate: scripts/check_change_scope.py (generated alongside this
+# workflow) exits non-zero for a "substantive" change (src/train.py,
+# src/evaluate.py, src/preprocess.py, src/features.py, src/explain.py,
+# conf/, databricks.yml) that hasn't been re-approved since the last
+# promotion recorded in .mlops/approved_state.txt — GitHub Actions fails the
+# job on that non-zero exit and the deploy step never runs. This only
+# verifies the CHANGE-SCOPE side of governance; verifying that every
+# required_approvers entry in .mlops/approval_record.json has actually
+# signed off for the current manifest hash is a known gap (would need this
+# runner to query the control-plane app's own approval database, not wired
+# up here) — GitHub's branch-protection PR-review requirement (Step 7) is
+# what currently enforces the human review this depends on.
+#
+# QA cleanup runs first (best-effort, non-blocking) so prod doesn't inherit
+# scratch resources from dev/staging experimentation.
+#
+# Found live 2026-07-13: the wizard's progressive per-step commits push
+# straight to main (services/bundle_commit_service.py), and this workflow
+# used to hard-fail every one of those pushes when DATABRICKS_HOST/
+# DATABRICKS_TOKEN repo secrets weren't configured yet (true for every
+# project until someone deliberately adds them) -- GitHub emails the pusher
+# on every workflow failure by default, so a brand-new project would spam
+# its owner from the very first commit. The "Check Databricks credentials"
+# step below makes every later step conditional so the job completes
+# successfully (skipped, not failed) until secrets actually exist.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # check_change_scope.py diffs against the last approved sha
+
+      - name: Check Databricks credentials are configured
+        id: creds
+        run: |
+          if [ -z "${{ secrets.DATABRICKS_HOST }}" ] || [ -z "${{ secrets.DATABRICKS_TOKEN }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DATABRICKS_HOST/DATABRICKS_TOKEN repo secrets aren't set yet -- skipping deploy (this is not a failure). Add them under Settings > Secrets and variables > Actions when this project is ready to deploy to prod."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.creds.outputs.configured == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Check approval scope
+        if: steps.creds.outputs.configured == 'true'
+        run: python scripts/check_change_scope.py
+
+      - name: Install Databricks CLI
+        if: steps.creds.outputs.configured == 'true'
+        uses: databricks/setup-cli@main
+
+      - name: Clean up non-essential QA/dev resources
+        if: steps.creds.outputs.configured == 'true'
+        continue-on-error: true
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python scripts/cleanup_qa_resources.py
+
+      - name: Deploy
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: databricks bundle deploy -t prod
+
+      - name: Record approved state
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          git rev-parse HEAD > .mlops/approved_state.txt
+          echo "Recorded $(cat .mlops/approved_state.txt) as the new approved baseline"
+{% endraw %}

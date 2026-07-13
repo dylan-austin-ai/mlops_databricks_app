@@ -186,6 +186,403 @@ class TestGenerate:
         assert "schedule" not in scorer
         assert (bundle_dir / "src" / "stream_score.py").exists()
 
+    def test_budget_policy_id_omitted_when_not_resolved(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+        doc = yaml.safe_load((bundle_dir / "resources" / "jobs.yml").read_text())
+
+        assert "budget_policy_id" not in doc["resources"]["jobs"]["churn_training"]
+
+    def test_budget_policy_id_rendered_on_every_job_when_resolved(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", _interview(), tmp_path, budget_policy_id="policy-abc123"
+        )
+        doc = yaml.safe_load((bundle_dir / "resources" / "jobs.yml").read_text())
+        jobs = doc["resources"]["jobs"]
+
+        assert jobs["churn_training"]["budget_policy_id"] == "policy-abc123"
+        assert jobs["churn_retraining"]["budget_policy_id"] == "policy-abc123"
+        assert jobs["churn_batch_scoring"]["budget_policy_id"] == "policy-abc123"
+
+    def test_budget_policy_id_rendered_on_serving_endpoint(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(inference_type="real_time", batch_schedule=None)
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", responses, tmp_path, budget_policy_id="policy-abc123"
+        )
+        doc = yaml.safe_load((bundle_dir / "resources" / "model_serving.yml").read_text())
+        ep = doc["resources"]["model_serving_endpoints"]["churn_endpoint"]
+
+        assert ep["budget_policy_id"] == "policy-abc123"
+
+
+def _write_toolkits(tmp_path: Path, *, count: int = 2) -> Path:
+    tk_dir = tmp_path / "toolkits"
+    tk_dir.mkdir()
+    entries = [
+        "  - toolkit_id: mlops_toolkit\n"
+        "    name: Acme MLOps Toolkit\n"
+        "    pip_spec: acme-mlops-toolkit>=2.0\n"
+        "    import_statement: import acme_mlops_toolkit as mlops\n",
+        "  - toolkit_id: ds_toolkit\n"
+        "    name: Acme DS Toolkit\n"
+        "    pip_spec: git+https://github.com/acme-corp/ds-toolkit.git@main\n"
+        "    import_statement: from acme_ds_toolkit import eda\n",
+    ]
+    (tk_dir / "org.yaml").write_text("toolkits:\n" + "".join(entries[:count]))
+    return tk_dir
+
+
+class TestAccelerants:
+    """Owner request 2026-07-13: AutoML baseline + hyperparameter search,
+    purely additive (§9.5) — neither renders unless explicitly opted into."""
+
+    def test_neither_rendered_by_default(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+
+        assert not (bundle_dir / "src" / "automl_baseline.py").exists()
+        assert not (bundle_dir / "src" / "hyperparameter_search.py").exists()
+        assert not (bundle_dir / "requirements.txt").exists()
+
+    def test_automl_baseline_rendered_when_opted_in(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(use_automl_baseline=True, target_variable="churned")
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        automl_py = (bundle_dir / "src" / "automl_baseline.py").read_text()
+        assert "from databricks import automl" in automl_py
+        assert 'target_col="churned"' in automl_py
+
+    def test_automl_classification_default(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(use_automl_baseline=True, performance_metric_types=["accuracy"])
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        automl_py = (bundle_dir / "src" / "automl_baseline.py").read_text()
+        assert "automl.classify(" in automl_py
+        assert "automl.regress(" not in automl_py
+
+    def test_automl_regression_metric_routes_to_regress(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(use_automl_baseline=True, performance_metric_types=["rmse"])
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        automl_py = (bundle_dir / "src" / "automl_baseline.py").read_text()
+        assert "automl.regress(" in automl_py
+
+    def test_hyperparameter_search_rendered_when_opted_in(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(use_hyperparameter_search=True)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        hp_py = (bundle_dir / "src" / "hyperparameter_search.py").read_text()
+        assert "import optuna" in hp_py
+        assert "optuna.create_study" in hp_py
+
+    def test_hyperparameter_search_adds_optuna_to_requirements(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(use_hyperparameter_search=True)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        assert "optuna>=3.6.0" in (bundle_dir / "requirements.txt").read_text()
+
+    def test_toolkit_imports_injected_into_both_accelerants(self, cfg, tmp_path):
+        tk_dir = _write_toolkits(tmp_path)
+        svc = BundleService(config=cfg, runner=FakeRunner(), toolkits_dir=tk_dir)
+        responses = _interview(use_automl_baseline=True, use_hyperparameter_search=True)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path / "out")
+
+        automl_py = (bundle_dir / "src" / "automl_baseline.py").read_text()
+        hp_py = (bundle_dir / "src" / "hyperparameter_search.py").read_text()
+        assert "import acme_mlops_toolkit as mlops" in automl_py
+        assert "import acme_mlops_toolkit as mlops" in hp_py
+
+    def test_both_valid_python_syntax(self, cfg, tmp_path):
+        import ast
+
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = _interview(use_automl_baseline=True, use_hyperparameter_search=True)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        ast.parse((bundle_dir / "src" / "automl_baseline.py").read_text())
+        ast.parse((bundle_dir / "src" / "hyperparameter_search.py").read_text())
+
+
+class TestEvaluatePy:
+    """Owner request 2026-07-13: evaluate.py was referenced in 3 places
+    (interview_service.py, generator_service.py's change-scope script, Step
+    6 help text) but never actually generated. Correctness of the generated
+    logic itself (not just rendering) is proven by actually executing it —
+    see the manual verification in PROJECT_STATUS.md; these tests cover
+    what renders under which config."""
+
+    def _responses(self, **overrides):
+        base = _interview(
+            target_variable="churned",
+            model_frameworks=["xgboost"],
+            performance_metric_types=["accuracy", "auc_roc"],
+            bias_test_types=["fairlearn"],
+            fairness_threshold_pct=10,
+        )
+        base.update(overrides)
+        return base
+
+    def test_always_rendered(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+
+        assert (bundle_dir / "src" / "evaluate.py").exists()
+
+    def test_only_selected_metrics_generated(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", self._responses(performance_metric_types=["precision"]), tmp_path
+        )
+
+        evaluate_py = (bundle_dir / "src" / "evaluate.py").read_text()
+        assert 'results["precision"]' in evaluate_py
+        assert 'results["accuracy"]' not in evaluate_py
+        assert 'results["recall"]' not in evaluate_py
+
+    def test_fairlearn_selected_generates_real_calls(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", self._responses(bias_test_types=["fairlearn"]), tmp_path
+        )
+
+        evaluate_py = (bundle_dir / "src" / "evaluate.py").read_text()
+        assert "from fairlearn.metrics import demographic_parity_difference, equalized_odds_difference" in evaluate_py
+        assert "from aif360.datasets import BinaryLabelDataset" not in evaluate_py
+
+    def test_aif360_selected_generates_scaffold_not_fake_automation(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", self._responses(bias_test_types=["aif360"]), tmp_path
+        )
+
+        evaluate_py = (bundle_dir / "src" / "evaluate.py").read_text()
+        # aif360 needs privileged-group values the app can't infer — scaffold
+        # only, never pretend to call a real API with guessed group values.
+        assert "# from aif360.datasets import BinaryLabelDataset" in evaluate_py
+        assert "ClassificationMetric(" not in evaluate_py
+
+    def test_fairness_threshold_and_sensitive_columns_rendered(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        responses = self._responses(
+            fairness_threshold_pct=15,
+            proxy_variables=[{"column": "zip_code", "protected_classes": ["Race / Ethnicity"], "justification": "x"}],
+        )
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        evaluate_py = (bundle_dir / "src" / "evaluate.py").read_text()
+        assert "FAIRNESS_THRESHOLD_PCT = 15" in evaluate_py
+        assert "'zip_code': ['Race / Ethnicity']" in evaluate_py
+
+    def test_explainability_method_matches_tree_default_for_xgboost(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", self._responses(model_frameworks=["xgboost"]), tmp_path
+        )
+
+        evaluate_py = (bundle_dir / "src" / "evaluate.py").read_text()
+        assert 'method = "shap"' in evaluate_py
+
+    def test_explainability_method_falls_back_to_lime_for_non_tree_model(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate(
+            "churn", "retention", "a@co.com", self._responses(model_frameworks=["pytorch"]), tmp_path
+        )
+
+        evaluate_py = (bundle_dir / "src" / "evaluate.py").read_text()
+        assert 'method = "lime"' in evaluate_py
+
+    def test_valid_python_syntax(self, cfg, tmp_path):
+        import ast
+
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", self._responses(), tmp_path)
+
+        ast.parse((bundle_dir / "src" / "evaluate.py").read_text())
+
+
+class TestFeatureEngineeringIntegration:
+    """Owner request 2026-07-13: real FeatureLookup/create_training_set
+    codegen for feature columns resolved to a Feature Catalog entry in
+    Step 3, grouped by source table (verified live: table_name/feature_names/
+    lookup_key and df/feature_lookups/label are the real parameter names)."""
+
+    def _responses_with_resolutions(self, resolutions, **overrides):
+        base = _interview(target_variable="churned", feature_columns=list(resolutions.keys()))
+        base["feature_catalog_resolutions"] = resolutions
+        base.update(overrides)
+        return base
+
+    def test_no_resolutions_falls_back_to_plain_read(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert "FeatureEngineeringClient" not in train_py
+        assert "spark.table" in train_py
+
+    def test_shared_feature_generates_lookup(self, cfg, tmp_path):
+        responses = self._responses_with_resolutions(
+            {
+                "policyholder_zip": {
+                    "resolved": "shared",
+                    "feature_table_name": "mlops.shared.geo_risk_features",
+                    "feature_column_name": "policyholder_zip",
+                }
+            }
+        )
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert "from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup" in train_py
+        assert 'table_name="mlops.shared.geo_risk_features"' in train_py
+        assert "'policyholder_zip'" in train_py
+        assert 'label="churned"' in train_py
+        assert "fe.log_model" in train_py
+
+    def test_columns_from_same_table_grouped_into_one_lookup(self, cfg, tmp_path):
+        responses = self._responses_with_resolutions(
+            {
+                "a": {"resolved": "shared", "feature_table_name": "mlops.shared.t1", "feature_column_name": "a"},
+                "b": {"resolved": "shared", "feature_table_name": "mlops.shared.t1", "feature_column_name": "b"},
+            }
+        )
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert train_py.count("FeatureLookup(") == 1
+        assert 'table_name="mlops.shared.t1"' in train_py
+
+    def test_adhoc_columns_never_generate_lookups(self, cfg, tmp_path):
+        responses = self._responses_with_resolutions(
+            {"vendor_score": {"resolved": "adhoc", "justification": "project-specific"}}
+        )
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert "FeatureEngineeringClient" not in train_py
+
+    def test_mixed_shared_and_adhoc_names_the_adhoc_columns_in_the_todo(self, cfg, tmp_path):
+        responses = self._responses_with_resolutions(
+            {
+                "a": {"resolved": "shared", "feature_table_name": "mlops.shared.t1", "feature_column_name": "a"},
+                "vendor_score": {"resolved": "adhoc", "justification": "project-specific"},
+            }
+        )
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert "vendor_score" in train_py  # surfaced in the base_df TODO comment
+
+    def test_base_df_uses_first_training_dataset_when_known(self, cfg, tmp_path):
+        responses = self._responses_with_resolutions(
+            {"a": {"resolved": "shared", "feature_table_name": "mlops.shared.t1", "feature_column_name": "a"}},
+            training_datasets=["acme.risk.property_training"],
+        )
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert 'spark.table("acme.risk.property_training")' in train_py
+
+    def test_train_py_stays_valid_python_with_lookups(self, cfg, tmp_path):
+        import ast
+
+        responses = self._responses_with_resolutions(
+            {
+                "a": {"resolved": "shared", "feature_table_name": "mlops.shared.t1", "feature_column_name": "a"},
+                "b": {"resolved": "adhoc", "justification": "x"},
+            }
+        )
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path)
+
+        ast.parse((bundle_dir / "src" / "train.py").read_text())
+
+
+class TestToolkitImports:
+    """Owner request 2026-07-13: org-configured auto-import into generated
+    training/EDA code, mirroring the policy_packs YAML convention."""
+
+    def test_eda_py_always_rendered(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+
+        assert (bundle_dir / "src" / "eda.py").exists()
+
+    def test_no_toolkits_configured_no_requirements_txt_no_imports(self, cfg, tmp_path):
+        empty_dir = tmp_path / "empty_toolkits"
+        empty_dir.mkdir()
+        svc = BundleService(config=cfg, runner=FakeRunner(), toolkits_dir=empty_dir)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path / "out")
+
+        assert not (bundle_dir / "requirements.txt").exists()
+        assert "acme" not in (bundle_dir / "src" / "train.py").read_text()
+        assert "Org toolkits" not in (bundle_dir / "src" / "eda.py").read_text()
+
+    def test_toolkits_configured_requirements_txt_rendered(self, cfg, tmp_path):
+        tk_dir = _write_toolkits(tmp_path)
+        svc = BundleService(config=cfg, runner=FakeRunner(), toolkits_dir=tk_dir)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path / "out")
+
+        reqs = (bundle_dir / "requirements.txt").read_text()
+        assert "acme-mlops-toolkit>=2.0" in reqs
+        assert "git+https://github.com/acme-corp/ds-toolkit.git@main" in reqs
+
+    def test_toolkits_configured_imports_injected_into_train_py(self, cfg, tmp_path):
+        tk_dir = _write_toolkits(tmp_path)
+        svc = BundleService(config=cfg, runner=FakeRunner(), toolkits_dir=tk_dir)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path / "out")
+
+        train_py = (bundle_dir / "src" / "train.py").read_text()
+        assert "import acme_mlops_toolkit as mlops" in train_py
+        assert "from acme_ds_toolkit import eda" in train_py
+
+    def test_toolkits_configured_imports_injected_into_eda_py(self, cfg, tmp_path):
+        tk_dir = _write_toolkits(tmp_path)
+        svc = BundleService(config=cfg, runner=FakeRunner(), toolkits_dir=tk_dir)
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path / "out")
+
+        eda_py = (bundle_dir / "src" / "eda.py").read_text()
+        assert "import acme_mlops_toolkit as mlops" in eda_py
+        assert "from acme_ds_toolkit import eda" in eda_py
+
+    def test_eda_py_widgets_default_to_dev_catalog_schema(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+
+        eda_py = (bundle_dir / "src" / "eda.py").read_text()
+        assert 'dbutils.widgets.text("catalog", "mlops")' in eda_py
+        assert 'dbutils.widgets.text("schema", "churn_dev")' in eda_py
+
+    def test_eda_py_points_at_same_mlflow_experiment_generator_creates(self, cfg, tmp_path):
+        svc = BundleService(config=cfg, runner=FakeRunner())
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", _interview(), tmp_path)
+
+        eda_py = (bundle_dir / "src" / "eda.py").read_text()
+        assert 'mlflow.set_experiment("/Shared/mlops/churn")' in eda_py
+
+    def test_batch_score_and_stream_score_not_touched_by_toolkits(self, cfg, tmp_path):
+        # Scoped deliberately to train.py + eda.py (EDA/feature-selection/
+        # training) — not the inference-time scripts, which weren't part
+        # of the ask.
+        tk_dir = _write_toolkits(tmp_path)
+        svc = BundleService(config=cfg, runner=FakeRunner(), toolkits_dir=tk_dir)
+        responses = _interview(inference_type="batch", batch_schedule="0 2 * * *")
+        bundle_dir = svc.generate("churn", "retention", "a@co.com", responses, tmp_path / "out")
+
+        assert "acme" not in (bundle_dir / "src" / "batch_score.py").read_text()
+
 
 class TestHealthCheck:
     def test_version_match_passes(self, cfg):

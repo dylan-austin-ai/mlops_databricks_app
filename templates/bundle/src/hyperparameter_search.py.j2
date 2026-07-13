@@ -1,0 +1,59 @@
+"""Hyperparameter search scaffold for {{ project_name }} — optional
+accelerant, generated because you opted in during setup (Step 2).
+
+Optuna + MLflow. The trial loop, MLflow logging, and best-trial reporting
+below are real, runnable mechanics — only the search space and the model
+training/scoring inside objective() are stubs, since that's specific to the
+model you're actually building.
+"""
+
+from __future__ import annotations
+
+import argparse
+{% if toolkit_imports %}
+# Org toolkits — configured in toolkits/*.yaml, not this file.
+{% for stmt in toolkit_imports %}
+{{ stmt }}
+{% endfor %}
+{% endif %}
+
+
+def objective(trial, x_train, y_train, x_valid, y_valid) -> float:
+    import mlflow
+
+    # TODO(data-scientist): replace with your model's real search space.
+    params = {
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+    }
+
+    with mlflow.start_run(nested=True):
+        mlflow.log_params(params)
+        # TODO(data-scientist): train a model with `params`, score it on
+        # (x_valid, y_valid), and return the score Optuna should maximize.
+        raise NotImplementedError("Wire up real training + scoring for this trial.")
+
+
+def run_search(x_train, y_train, x_valid, y_valid, n_trials: int = 50):
+    import optuna
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(
+        lambda trial: objective(trial, x_train, y_train, x_valid, y_valid),
+        n_trials=n_trials,
+    )
+    print(f"Best trial #{study.best_trial.number}: value={study.best_value}, params={study.best_params}")
+    return study
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalog", required=True)
+    parser.add_argument("--schema", required=True)
+    parser.add_argument("--n-trials", type=int, default=50)
+    args = parser.parse_args()
+
+    # TODO(data-scientist): load real train/validation splits, then:
+    #   run_search(x_train, y_train, x_valid, y_valid, args.n_trials)
+    raise NotImplementedError("Wire up data loading, then call run_search(...).")

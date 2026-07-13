@@ -8,7 +8,12 @@ registration, and schema-scoped output so dev/staging/prod stay isolated.
 from __future__ import annotations
 
 import argparse
-
+{% if toolkit_imports %}
+# Org toolkits — configured in toolkits/*.yaml, not this file.
+{% for stmt in toolkit_imports %}
+{{ stmt }}
+{% endfor %}
+{% endif %}
 
 def train(catalog: str, schema: str, model_name: str, retrain: bool = False) -> None:
     import mlflow
@@ -19,9 +24,60 @@ def train(catalog: str, schema: str, model_name: str, retrain: bool = False) -> 
     with mlflow.start_run():
         mlflow.set_tag("project_id", model_name)
         mlflow.set_tag("run_type", "retrain" if retrain else "train")
-        # TODO(data-scientist): load training data from {catalog}, train, and log
-        # the model with registered_model_name=uc_model. Example:
+{% if feature_lookups %}
+        # Feature Engineering in Unity Catalog (§8) — {{ feature_lookups|length }}
+        # feature table(s) resolved from the Feature Catalog at Step 3. Confirmed
+        # live against current docs (owner request 2026-07-13): FeatureLookup /
+        # create_training_set take table_name/feature_names/lookup_key and
+        # df/feature_lookups/label respectively.
+        from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
+
+        fe = FeatureEngineeringClient()
+        feature_lookups = [
+{% for lk in feature_lookups %}
+            FeatureLookup(
+                table_name="{{ lk.table_name }}",
+                feature_names={{ lk.feature_names }},
+                # TODO(data-scientist): the app tracks what this feature *is*,
+                # not what entity key joins {{ lk.table_name }} to your training
+                # data — fill in the real join column.
+                lookup_key="TODO_lookup_key",
+            ),
+{% endfor %}
+        ]
+
+        # TODO(data-scientist): base_df must contain every lookup_key above,
+        # plus the target and any ad-hoc feature columns not covered by a
+        # feature table{% if adhoc_features %} ({{ adhoc_features|join(", ") }}){% endif %}.
+{% if training_datasets %}
+        base_df = spark.table("{{ training_datasets[0] }}")
+{% else %}
+        base_df = spark.table(f"{catalog}.{schema}.your_training_table")
+{% endif %}
+
+        training_set = fe.create_training_set(
+            df=base_df,
+            feature_lookups=feature_lookups,
+            label="{{ target_variable }}",
+        )
+        training_df = training_set.load_df().toPandas()
+{% else %}
+        # TODO(data-scientist): load training data{% if training_datasets %} from
+        # {{ training_datasets|join(", ") }}{% endif %}, train, and log the model
+        # with registered_model_name=uc_model. Example:
+{% if training_datasets %}
+        #   training_df = spark.table("{{ training_datasets[0] }}").toPandas()
+{% else %}
+        #   training_df = spark.table(f"{catalog}.{schema}.your_training_table").toPandas()
+{% endif %}
+{% endif %}
+        # TODO(data-scientist): train, then log the model. Example:
+{% if feature_lookups %}
+        #   fe.log_model(model=model, artifact_path="model", flavor=mlflow.sklearn,
+        #                training_set=training_set, registered_model_name=uc_model)
+{% else %}
         #   mlflow.sklearn.log_model(model, "model", registered_model_name=uc_model)
+{% endif %}
         raise NotImplementedError(
             f"Training logic not implemented yet. Register the model as {uc_model}."
         )

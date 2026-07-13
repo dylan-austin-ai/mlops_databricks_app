@@ -1,0 +1,109 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # {{ project_name }} — EDA & Feature Selection
+# MAGIC
+# MAGIC Generated starting point — replace the placeholder cells below with real
+# MAGIC exploration. This notebook is source-formatted (not raw `.ipynb`), so it's
+# MAGIC git-mergeable and opens natively as a notebook via Databricks Repos.
+# MAGIC
+# MAGIC Nothing here pins a cluster — attach whatever compute you want (serverless
+# MAGIC or a cluster) from the notebook UI when you open it; that's a per-session
+# MAGIC choice, not something a file can set for you.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Catalog / schema
+# MAGIC
+# MAGIC Defaults to this project's **dev** schema. Editable via the widgets below —
+# MAGIC change them if you're exploring a different environment.
+
+# COMMAND ----------
+
+dbutils.widgets.text("catalog", "{{ catalog_dev }}")
+dbutils.widgets.text("schema", "{{ project_name }}_dev")
+
+catalog = dbutils.widgets.get("catalog")
+schema = dbutils.widgets.get("schema")
+
+spark.sql(f"USE CATALOG {catalog}")
+spark.sql(f"USE SCHEMA {schema}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## MLflow experiment
+# MAGIC
+# MAGIC Same experiment `ProjectInfrastructureGenerator` already created for this
+# MAGIC project — exploration runs land alongside training runs, not a separate
+# MAGIC untracked experiment.
+
+# COMMAND ----------
+
+import mlflow
+
+mlflow.set_tracking_uri("databricks")
+mlflow.set_experiment("/Shared/mlops/{{ project_name }}")
+
+# COMMAND ----------
+{% if toolkit_imports %}
+# MAGIC %md
+# MAGIC ## Org toolkits
+# MAGIC
+# MAGIC Configured in `toolkits/*.yaml` (see the repo root) — add or remove
+# MAGIC toolkits there, not in this file.
+
+# COMMAND ----------
+
+{% for stmt in toolkit_imports %}
+{{ stmt }}
+{% endfor %}
+
+# COMMAND ----------
+{% endif %}
+# MAGIC %md
+# MAGIC ## Load data
+# MAGIC
+# MAGIC TODO(data-scientist): point this at your real training source(s)
+# MAGIC (`catalog.schema.table`, declared as a data contract once you know its
+# MAGIC shape — see `07_data_contracts.py` in the control plane).
+
+# COMMAND ----------
+
+# df = spark.table(f"{catalog}.{schema}.your_training_table")
+# display(df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Exploratory data analysis
+# MAGIC
+# MAGIC TODO(data-scientist): distributions, missingness, correlations, target
+# MAGIC balance, whatever this dataset actually needs.
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Feature selection
+# MAGIC
+# MAGIC TODO(data-scientist): candidate features, importance/correlation
+# MAGIC screening, what to carry into `train.py`. This is also where proxy /
+# MAGIC protected-attribute considerations from the project's Governance step
+# MAGIC get revisited with real data in front of you, not just a column list.
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Next step
+# MAGIC
+# MAGIC Once feature selection settles, move the final logic into `train.py` —
+# MAGIC that's the file the generated training job actually runs. This notebook
+# MAGIC is for exploration; it's never executed by any job.

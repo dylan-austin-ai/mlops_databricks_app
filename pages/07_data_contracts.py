@@ -231,6 +231,72 @@ def _new_contract_form(project_id: str, owner_email: str) -> None:
             st.error(f"Failed to save contract: {exc}", icon="❌")
 
 
+_DQ_STATUS_COLOR = {
+    "excellent": "#5eead4",
+    "good": "#5eead4",
+    "acceptable": "#facc15",
+    "poor": "#fb923c",
+    "critical": "#f87171",
+}
+
+
+def _data_quality_section(contract: dict, owner_email: str) -> None:
+    """§6 — runs the checks a contract's columns already declare against the
+    real table and records the result (data_quality_assessments, previously
+    a dead table nothing wrote to)."""
+    from services.data_quality_service import DataQualityService, DataQualityServiceError
+
+    contract_id = contract["contract_id"]
+    dq = DataQualityService()
+
+    st.markdown("**Data quality**")
+    latest = None
+    try:
+        latest = dq.latest_assessment(contract["project_id"])
+    except Exception:
+        pass  # no assessment table reachable yet — treat as "never run"
+
+    if latest and str(latest.get("contract_id")) == contract_id:
+        status = str(latest.get("quality_status") or "unknown")
+        color = _DQ_STATUS_COLOR.get(status, "#64748b")
+        score = float(latest.get("quality_score") or 0.0)
+        when = str(latest.get("assessment_timestamp") or "")[:19]
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;font-size:13px">'
+            f'<span style="color:{color};font-weight:600">{status.title()}</span>'
+            f'<span style="color:#64748b">score {score:.2f} · {latest.get("row_count", 0)} rows · {when}</span>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        failed = json.loads(latest.get("failed_checks") or "[]") if latest.get("failed_checks") else []
+        if failed:
+            st.caption(f"{len(failed)} check(s) failed: " + "; ".join(f"{f['column']} ({f['check']})" for f in failed))
+    else:
+        st.caption("No assessment run yet.")
+
+    if st.button("▶ Run quality assessment", key=f"run_dq_{contract_id}"):
+        if not contract.get("uc_path"):
+            st.warning("Contract has no UC table path to check.", icon="⚠️")
+        else:
+            with st.spinner("Running data quality checks..."):
+                try:
+                    result = dq.run_assessment(
+                        contract["project_id"], contract_id, contract["uc_path"], created_by=owner_email
+                    )
+                    st.success(
+                        f"Assessment complete — {result.quality_status} (score {result.quality_score:.2f}, "
+                        f"{result.issues_found}/{result.checks_run} check(s) failed).",
+                        icon="✅",
+                    )
+                    st.rerun()
+                except DataQualityServiceError as exc:
+                    st.error(str(exc), icon="❌")
+                except Exception as exc:
+                    st.error(f"Assessment failed: {exc}", icon="❌")
+
+    st.markdown("")
+
+
 def _existing_contract(contract: dict, owner_email: str) -> None:
     from services.state_service import StateService
 
@@ -247,6 +313,16 @@ def _existing_contract(contract: dict, owner_email: str) -> None:
         else '<span style="font-size:11px;color:#64748b">⏳ Draft</span>'
     )
 
+    uc_path_html = (
+        f"<span style='font-size:12px;color:#64748b;font-family:JetBrains Mono,monospace'>{contract['uc_path']}</span>"
+        if contract.get("uc_path")
+        else ""
+    )
+    purpose_html = (
+        f"<span style='font-size:13px;color:#64748b'>{contract.get('purpose', '')}</span>"
+        if contract.get("purpose")
+        else ""
+    )
     st.markdown(
         f'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px">'
         f'<div style="display:flex;flex-direction:column;gap:6px">'
@@ -255,8 +331,8 @@ def _existing_contract(contract: dict, owner_email: str) -> None:
         f"{tag_html}"
         f"<span style=\"font-size:12px;color:#46546e;font-family:'JetBrains Mono',monospace\">"
         f"v{contract.get('contract_version', 1)}</span></div>"
-        f"{"<span style='font-size:12px;color:#64748b;font-family:JetBrains Mono,monospace'>" + contract['uc_path'] + '</span>' if contract.get('uc_path') else ''}"
-        f"{"<span style='font-size:13px;color:#64748b'>" + contract.get('purpose', '') + '</span>' if contract.get('purpose') else ''}"
+        f"{uc_path_html}"
+        f"{purpose_html}"
         f"</div><div>{v_html}</div></div>",
         unsafe_allow_html=True,
     )
@@ -294,6 +370,8 @@ def _existing_contract(contract: dict, owner_email: str) -> None:
             )
         st.markdown(header_html + rows_html, unsafe_allow_html=True)
         st.markdown("")
+
+    _data_quality_section(contract, owner_email)
 
     key = f"edit_{contract_id}"
     if st.button("✏️ Edit columns", key=key):

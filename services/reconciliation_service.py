@@ -21,17 +21,23 @@ Runs on the scheduled-job pattern (§3) — never from the Streamlit request pat
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from services.notification_service import NotificationService
 from services.policy_pack_service import PolicyPackService, strictest_action
 from services.registry_service import CHAMPION, RegistryService
 from services.state_service import StateService
 
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+_PERIOD_DAYS = {"monthly": 30, "quarterly": 90, "annual": 365}
+_PERFORMANCE_ALERT_METRIC = "performance_degradation"
+_ALERT_DEDUP_HOURS = 24
 
 
 @dataclass
@@ -49,10 +55,12 @@ class ReconciliationService:
         state: StateService | None = None,
         registry: RegistryService | None = None,
         policy: PolicyPackService | None = None,
+        notifications: NotificationService | None = None,
     ) -> None:
         self._state = state or StateService()
         self._registry = registry or RegistryService()
         self._policy = policy or PolicyPackService(state=self._state)
+        self._notifications = notifications or NotificationService()
 
     def _tbl(self, name: str) -> str:
         return self._state._tbl(name)
@@ -274,11 +282,170 @@ class ReconciliationService:
             },
         )
 
+    # ── §17.3: budget_alerts — was a dead table, never read or written ──────
+
+    def reconcile_budget_alerts(self) -> ReconcileRunResult:
+        """Compare each project's rolling-window spend (mlops.cost_tracking,
+        same rolling-window convention already used by reconcile_costs and
+        CapacityService.control_plane_budget_status) against its configured
+        budget_alerts threshold. Breach notifications are de-duped per period
+        bucket (last_alerted_period) so this doesn't re-notify on every
+        reconciliation pass for the same ongoing breach."""
+        job = "budget_alert_check"
+        try:
+            budgets = self._state._exec(f"""SELECT * FROM {self._tbl("budget_alerts")} WHERE enabled = true""")
+            examined = len(budgets)
+            changed = 0
+            for budget in budgets:
+                project_id = str(budget["project_id"])
+                period = str(budget.get("budget_period") or "monthly")
+                days_back = _PERIOD_DAYS.get(period, 30)
+                threshold = float(budget.get("budget_threshold_usd") or 0)
+                alert_at_pct = float(budget.get("alert_at_pct") or 100)
+                if threshold <= 0:
+                    continue
+
+                rows = self._state._exec(
+                    f"""SELECT sum(total_cost_usd) AS total
+                        FROM {self._tbl("cost_tracking")}
+                        WHERE project_id = :project_id AND date >= date_sub(current_date(), :days_back)""",
+                    {"project_id": project_id, "days_back": days_back},
+                )
+                spend = float(rows[0].get("total") or 0) if rows else 0.0
+                if spend < threshold * (alert_at_pct / 100.0):
+                    continue
+
+                period_bucket = str(datetime.now(UTC).toordinal() // days_back)
+                if str(budget.get("last_alerted_period") or "") == period_bucket:
+                    continue  # already notified for this period, not a new breach
+
+                recipients = list(budget.get("alert_recipients") or [])
+                if recipients:
+                    self._notifications.send(
+                        {"destination": "email", "email_addresses": recipients},
+                        f"Budget alert — project {project_id}",
+                        f"Spend ${spend:,.2f} has reached {alert_at_pct:.0f}% of the "
+                        f"${threshold:,.2f} {period} budget (§17.3).",
+                    )
+                self._state._exec(
+                    f"""UPDATE {self._tbl("budget_alerts")}
+                        SET last_alerted_period = :period, last_alerted_timestamp = current_timestamp()
+                        WHERE budget_id = :budget_id""",
+                    {"budget_id": str(budget["budget_id"]), "period": period_bucket},
+                )
+                changed += 1
+            return self._finish(job, "budget_alerts", examined, changed)
+        except Exception as exc:
+            return self._finish(job, "budget_alerts", 0, 0, error=str(exc))
+
+    # ── §13/§14.1: performance alerts — alert_history was read, never written ─
+
+    def reconcile_performance_alerts(self) -> ReconcileRunResult:
+        """A performance breach was already tracked in mlops.model_performance
+        (performance_degraded/degradation_pct) but nothing ever surfaced it —
+        alert_history was read by the dashboard but nothing ever inserted a
+        row, and no notification ever reached anyone. Reuses the exact
+        threshold already established for the saga's default canary check
+        (§15.2's make_default_canary_check) rather than a second definition
+        of "breached". De-duped by not re-firing within _ALERT_DEDUP_HOURS of
+        this alert's last firing — an ongoing breach notifies once per
+        window, not once per reconciliation pass."""
+        job = "performance_alert_check"
+        try:
+            rows = self._state._exec(
+                f"""SELECT p.project_id, mp.model_id, mp.degradation_pct
+                    FROM {self._tbl("model_performance")} mp
+                    JOIN {self._tbl("models")} m ON m.model_id = mp.model_id
+                    JOIN {self._tbl("projects")} p ON p.project_id = m.project_id
+                    WHERE mp.measurement_timestamp >= date_sub(current_timestamp(), 1)
+                      AND mp.performance_degraded = true"""
+            )
+            examined = len(rows)
+            changed = 0
+            for row in rows:
+                project_id = str(row["project_id"])
+                model_id = str(row["model_id"])
+
+                config_rows = self._state._exec(
+                    f"""SELECT interview_responses FROM {self._tbl("project_configurations")}
+                        WHERE project_id = :project_id ORDER BY config_version DESC LIMIT 1""",
+                    {"project_id": project_id},
+                )
+                if not config_rows:
+                    continue
+                try:
+                    responses = json.loads(str(config_rows[0].get("interview_responses") or "{}"))
+                except (TypeError, ValueError):
+                    continue
+                threshold = responses.get("performance_alert_threshold_pct")
+                destinations = responses.get("alert_destination_configs") or []
+                if threshold is None or not destinations:
+                    continue
+                degradation = float(row.get("degradation_pct") or 0.0)
+                if degradation < float(threshold):
+                    continue
+
+                alert_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"perf-alert:{model_id}"))
+                self._state._exec(
+                    f"""MERGE INTO {self._tbl("alerts")} t
+                        USING (SELECT :alert_id AS alert_id) s
+                        ON t.alert_id = s.alert_id
+                        WHEN MATCHED THEN UPDATE SET t.threshold_value = :threshold
+                        WHEN NOT MATCHED THEN INSERT (
+                          alert_id, model_id, alert_name, alert_type, metric_name,
+                          threshold_value, comparison_operator, severity, is_enabled, created_timestamp
+                        ) VALUES (
+                          :alert_id, :model_id, 'Performance degradation', 'standard', :metric_name,
+                          :threshold, '>=', 'warning', true, current_timestamp()
+                        )""",
+                    {
+                        "alert_id": alert_id,
+                        "model_id": model_id,
+                        "metric_name": _PERFORMANCE_ALERT_METRIC,
+                        "threshold": float(threshold),
+                    },
+                )
+
+                last_fired = self._state._exec(
+                    f"""SELECT max(triggered_timestamp) AS last_fired
+                        FROM {self._tbl("alert_history")} WHERE alert_id = :alert_id""",
+                    {"alert_id": alert_id},
+                )
+                fired_at = _parse_ts((last_fired or [{}])[0].get("last_fired")) if last_fired else None
+                if fired_at is not None and (datetime.now(UTC) - fired_at).total_seconds() < _ALERT_DEDUP_HOURS * 3600:
+                    continue  # already alerted within the dedup window — still an open breach, not a new one
+
+                self._state._exec(
+                    f"""INSERT INTO {self._tbl("alert_history")}
+                        (event_id, alert_id, model_id, triggered_timestamp, alert_value, alert_severity,
+                         notification_sent, notification_timestamp, resolved, created_timestamp)
+                        VALUES (:event_id, :alert_id, :model_id, current_timestamp(), :alert_value, 'warning',
+                                true, current_timestamp(), false, current_timestamp())""",
+                    {
+                        "event_id": str(uuid.uuid4()),
+                        "alert_id": alert_id,
+                        "model_id": model_id,
+                        "alert_value": degradation,
+                    },
+                )
+                self._notifications.send_all(
+                    destinations,
+                    f"Performance degradation — model {model_id}",
+                    f"Degradation {degradation:.1f}% has reached the configured "
+                    f"{float(threshold):.1f}% alert threshold.",
+                )
+                changed += 1
+            return self._finish(job, "alert_history", examined, changed)
+        except Exception as exc:
+            return self._finish(job, "alert_history", 0, 0, error=str(exc))
+
     def run_all(self) -> list[ReconcileRunResult]:
         return [
             self.reconcile_model_aliases(),
             self.reconcile_costs(),
             self.reconcile_revalidation(),
+            self.reconcile_budget_alerts(),
+            self.reconcile_performance_alerts(),
         ]
 
     # ── §21.1 self-monitoring wrapper ────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,12 +19,18 @@ from tests.test_approval_service import FakeState
 from tests.test_registry_service import FakeMlflowClient, FakeWorkspaceClient, _endpoint
 
 
+class _FakeProjectsCatalogCfg:
+    def projects_catalog_for(self, env: str) -> str:
+        return "mlops"
+
+
 class PrefixFakeState(FakeState):
     """FakeState with prefix-routed SELECT results (canary default queries)."""
 
     def __init__(self):
         super().__init__()
         self.rows_by_prefix: dict[str, list[dict]] = {}
+        self._cfg = _FakeProjectsCatalogCfg()
 
     def _exec(self, sql: str, params: dict | None = None):
         self.execs.append((sql, params))
@@ -34,6 +41,18 @@ class PrefixFakeState(FakeState):
         if stripped.upper().startswith("MERGE"):
             return [{"num_affected_rows": self.merge_affected}]
         return []
+
+
+class FakeMonitoring:
+    def __init__(self, raise_exc: Exception | None = None):
+        self.calls: list[dict] = []
+        self.raise_exc = raise_exc
+
+    def attach_inference_monitor(self, **kwargs):
+        if self.raise_exc:
+            raise self.raise_exc
+        self.calls.append(kwargs)
+        return SimpleNamespace(table_name=kwargs["inference_table"], already_existed=False)
 
 
 MODEL = "retention_churn_prod.ml.churn"
@@ -76,7 +95,7 @@ def _approved_approval(tmp_path, **overrides) -> dict:
     return base
 
 
-def _saga(cfg, state, bundles=None, client=None, canary=None, policy=None, ws=None) -> PromoteToProductionSaga:
+def _saga(cfg, state, bundles=None, client=None, canary=None, policy=None, ws=None, monitoring=None):
     registry = RegistryService(
         config=cfg,
         client=client or FakeMlflowClient(),
@@ -90,6 +109,7 @@ def _saga(cfg, state, bundles=None, client=None, canary=None, policy=None, ws=No
         registry=registry,
         canary_check=canary,
         policy=policy,
+        monitoring=monitoring or FakeMonitoring(),
     )
 
 
@@ -132,6 +152,10 @@ class TestHappyPath:
         assert state.audits[-1]["action_status"] == "success"
         # Model card assembled (step 6.5)
         assert (tmp_path / "docs" / "MODEL_CARD.md").exists()
+        # No endpoint (batch/streaming shape here) → monitor attach skipped,
+        # never silently attempted against a table that doesn't exist (6.6)
+        monitor_step = next(s for s in result.steps if s.name == "attach_monitor")
+        assert monitor_step.status == "skipped"
 
 
 class TestGuards:
@@ -192,6 +216,73 @@ class TestGuards:
         assert client.aliases[MODEL][CHAMPION] == 1  # champion never moved
         compensated = [s for s in result.steps if s.status == "compensated"]
         assert compensated and "challenger" in compensated[0].detail
+
+
+class TestAttachMonitor:
+    """§9.1/§13 saga step 6.6 — best-effort Lakehouse Monitoring attach."""
+
+    def _state_with_endpoint(self, tmp_path, *, fairness=None, metrics=None):
+        state = PrefixFakeState()
+        state.approvals["ap1"] = _approved_approval(tmp_path)
+        state.rows_by_prefix["SELECT interview_responses"] = [
+            {
+                "interview_responses": json.dumps(
+                    {
+                        "fairness_attributes": fairness or ["age_bucket"],
+                        "performance_metric_types": metrics or ["accuracy"],
+                    }
+                )
+            }
+        ]
+        return state
+
+    def test_attaches_monitor_when_endpoint_exists(self, cfg, tmp_path):
+        state = self._state_with_endpoint(tmp_path)
+        client = FakeMlflowClient()
+        client.set_registered_model_alias(MODEL, CHAMPION, 1)
+        monitoring = FakeMonitoring()
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()})
+        saga = _saga(cfg, state, client=client, ws=ws, monitoring=monitoring)
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True
+        monitor_step = next(s for s in result.steps if s.name == "attach_monitor")
+        assert monitor_step.status == "ok"
+        assert len(monitoring.calls) == 1
+        call = monitoring.calls[0]
+        assert call["inference_table"] == "mlops.churn_prod.inference_log_payload"
+        assert call["output_schema"] == "mlops.churn_prod"
+        assert call["prediction_col"] == "prediction"
+        assert call["problem_type"] == "classification"
+        assert call["slicing_exprs"] == ["age_bucket"]
+
+    def test_regression_metric_selects_regression_problem_type(self, cfg, tmp_path):
+        state = self._state_with_endpoint(tmp_path, metrics=["rmse"])
+        client = FakeMlflowClient()
+        client.set_registered_model_alias(MODEL, CHAMPION, 1)
+        monitoring = FakeMonitoring()
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()})
+        saga = _saga(cfg, state, client=client, ws=ws, monitoring=monitoring)
+
+        _run(saga, tmp_path)
+
+        assert monitoring.calls[0]["problem_type"] == "regression"
+
+    def test_attach_failure_never_blocks_promotion(self, cfg, tmp_path):
+        state = self._state_with_endpoint(tmp_path)
+        client = FakeMlflowClient()
+        client.set_registered_model_alias(MODEL, CHAMPION, 1)
+        monitoring = FakeMonitoring(raise_exc=RuntimeError("monitoring unavailable"))
+        ws = FakeWorkspaceClient({"churn-prod": _endpoint()})
+        saga = _saga(cfg, state, client=client, ws=ws, monitoring=monitoring)
+
+        result = _run(saga, tmp_path)
+
+        assert result.promoted is True  # promotion unaffected (§12.3 posture, reused here)
+        monitor_step = next(s for s in result.steps if s.name == "attach_monitor")
+        assert monitor_step.status == "failed"
+        assert "governance-coverage penalty" in monitor_step.detail
 
 
 class TestRevocationHandling:

@@ -1,0 +1,49 @@
+"""AutoML baseline for {{ project_name }} — optional accelerant, generated
+because you opted in during setup (Step 2).
+
+Purely additive (§9.5): your own training logic in train.py stays
+authoritative either way. This is a fast, disposable first model — keep
+what's useful (a baseline score to beat, feature importance from the best
+trial) or delete this file entirely.
+
+Confirmed live against current docs (owner request 2026-07-13):
+databricks.automl.classify()/.regress() take target_col + timeout_minutes;
+the older max_trials parameter is deprecated/unsupported on current runtimes.
+"""
+
+from __future__ import annotations
+
+import argparse
+{% if toolkit_imports %}
+# Org toolkits — configured in toolkits/*.yaml, not this file.
+{% for stmt in toolkit_imports %}
+{{ stmt }}
+{% endfor %}
+{% endif %}
+
+
+def run_automl_baseline(catalog: str, schema: str, timeout_minutes: int = 30):
+    from databricks import automl
+
+{% if training_datasets %}
+    df = spark.table("{{ training_datasets[0] }}")
+{% else %}
+    df = spark.table(f"{catalog}.{schema}.your_training_table")
+{% endif %}
+
+    summary = automl.{{ "regress" if is_regression else "classify" }}(
+        df,
+        target_col="{{ target_variable }}",
+        timeout_minutes=timeout_minutes,
+    )
+    print("AutoML run complete — see the MLflow experiment for trial results and the best model.")
+    return summary
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalog", required=True)
+    parser.add_argument("--schema", required=True)
+    parser.add_argument("--timeout-minutes", type=int, default=30)
+    args = parser.parse_args()
+    run_automl_baseline(args.catalog, args.schema, args.timeout_minutes)

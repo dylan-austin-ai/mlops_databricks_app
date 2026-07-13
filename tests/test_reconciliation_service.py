@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from config import AppConfig
@@ -139,11 +141,15 @@ class TestCostReconcile:
     def test_run_all_returns_all_passes(self, svc, state):
         state.rows_by_prefix["SELECT DISTINCT uc_full_name"] = []
         state.rows_by_prefix["SELECT DISTINCT p.project_id"] = []
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = []
+        state.rows_by_prefix["SELECT p.project_id, mp.model_id"] = []
         results = svc.run_all()
         assert [r.job_name for r in results] == [
             "model_alias_reconcile",
             "cost_reconcile",
             "revalidation_check",
+            "budget_alert_check",
+            "performance_alert_check",
         ]
 
 
@@ -271,3 +277,225 @@ class TestRevalidationCheck:
 
         assert result.status == "failed"
         assert "packs table missing" in result.detail
+
+
+class FakeNotifications:
+    def __init__(self):
+        self.sent: list[tuple] = []
+
+    def send(self, destination_config, subject, message):
+        self.sent.append((destination_config, subject, message))
+        return None
+
+    def send_all(self, destination_configs, subject, message):
+        return [self.send(dc, subject, message) for dc in destination_configs]
+
+
+def _current_period_bucket(days_back: int) -> str:
+    from datetime import UTC, datetime
+
+    return str(datetime.now(UTC).toordinal() // days_back)
+
+
+class TestBudgetAlerts:
+    """§17.3 — budget_alerts was in the schema but never read or written."""
+
+    def _budget(self, **overrides) -> dict:
+        base = {
+            "budget_id": "b1",
+            "project_id": "p1",
+            "budget_period": "monthly",
+            "budget_threshold_usd": 1000.0,
+            "alert_at_pct": 80.0,
+            "enabled": True,
+            "alert_recipients": ["mlops@co.com"],
+            "last_alerted_period": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_no_budgets_is_a_no_op(self, cfg, state):
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = []
+        svc = ReconciliationService(state=state, notifications=FakeNotifications())
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.status == "ok"
+        assert result.rows_examined == 0
+
+    def test_under_threshold_no_notification(self, cfg, state):
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = [self._budget()]
+        state.rows_by_prefix["SELECT sum(total_cost_usd)"] = [{"total": 100.0}]  # 10% of 1000
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_breach_sends_notification_and_marks_period(self, cfg, state):
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = [self._budget()]
+        state.rows_by_prefix["SELECT sum(total_cost_usd)"] = [{"total": 900.0}]  # 90% >= 80% alert_at_pct
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.rows_changed == 1
+        assert len(notifications.sent) == 1
+        dest, subject, message = notifications.sent[0]
+        assert dest == {"destination": "email", "email_addresses": ["mlops@co.com"]}
+        assert "p1" in subject
+        assert "$900.00" in message
+        update_sql, update_params = next(e for e in state.execs if e[0].strip().startswith("UPDATE budget_alerts"))
+        assert update_params["budget_id"] == "b1"
+
+    def test_already_alerted_this_period_skips(self, cfg, state):
+        period = _current_period_bucket(30)
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = [self._budget(last_alerted_period=period)]
+        state.rows_by_prefix["SELECT sum(total_cost_usd)"] = [{"total": 900.0}]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_no_recipients_still_marks_but_does_not_notify(self, cfg, state):
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = [self._budget(alert_recipients=[])]
+        state.rows_by_prefix["SELECT sum(total_cost_usd)"] = [{"total": 900.0}]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.rows_changed == 1
+        assert not notifications.sent
+
+    def test_zero_threshold_skipped(self, cfg, state):
+        state.rows_by_prefix["SELECT * FROM budget_alerts"] = [self._budget(budget_threshold_usd=0.0)]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_failure_recorded_not_raised(self, cfg, state):
+        class ExplodingState(ReconFakeState):
+            def _exec(self, sql, params=None):
+                if sql.strip().startswith("SELECT * FROM budget_alerts"):
+                    raise RuntimeError("budget_alerts unreachable")
+                return super()._exec(sql, params)
+
+        svc = ReconciliationService(state=ExplodingState(), notifications=FakeNotifications())
+
+        result = svc.reconcile_budget_alerts()
+
+        assert result.status == "failed"
+        assert "unreachable" in result.detail
+
+
+class TestPerformanceAlerts:
+    """§13/§14.1 — alert_history was read by the dashboard but nothing ever
+    wrote to it; no breach ever reached a human."""
+
+    _DEST = {"destination": "email", "email_addresses": ["mlops@co.com"]}
+
+    def _degraded_row(self, **overrides) -> dict:
+        base = {"project_id": "p1", "model_id": "m1", "degradation_pct": 15.0}
+        base.update(overrides)
+        return base
+
+    def _config_row(self, threshold=10.0, destinations=None) -> dict:
+        return {
+            "interview_responses": json.dumps(
+                {
+                    "performance_alert_threshold_pct": threshold,
+                    "alert_destination_configs": destinations if destinations is not None else [self._DEST],
+                }
+            )
+        }
+
+    def test_breach_triggers_alert_and_notification(self, cfg, state):
+        state.rows_by_prefix["SELECT p.project_id, mp.model_id"] = [self._degraded_row()]
+        state.rows_by_prefix["SELECT interview_responses"] = [self._config_row()]
+        state.rows_by_prefix["SELECT max(triggered_timestamp)"] = [{"last_fired": None}]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_performance_alerts()
+
+        assert result.rows_changed == 1
+        assert len(notifications.sent) == 1
+        dest, subject, message = notifications.sent[0]
+        assert dest == self._DEST
+        assert "m1" in subject
+        assert "15.0%" in message
+        insert_sql, insert_params = next(e for e in state.execs if e[0].strip().startswith("INSERT INTO alert_history"))
+        assert insert_params["model_id"] == "m1"
+        assert insert_params["alert_value"] == 15.0
+
+    def test_under_threshold_no_alert(self, cfg, state):
+        state.rows_by_prefix["SELECT p.project_id, mp.model_id"] = [self._degraded_row(degradation_pct=5.0)]
+        state.rows_by_prefix["SELECT interview_responses"] = [self._config_row(threshold=10.0)]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_performance_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_recently_fired_dedups(self, cfg, state):
+        from datetime import UTC, datetime
+
+        state.rows_by_prefix["SELECT p.project_id, mp.model_id"] = [self._degraded_row()]
+        state.rows_by_prefix["SELECT interview_responses"] = [self._config_row()]
+        state.rows_by_prefix["SELECT max(triggered_timestamp)"] = [{"last_fired": datetime.now(UTC).isoformat()}]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_performance_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_no_config_skips(self, cfg, state):
+        state.rows_by_prefix["SELECT p.project_id, mp.model_id"] = [self._degraded_row()]
+        state.rows_by_prefix["SELECT interview_responses"] = []
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_performance_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_no_destinations_skips(self, cfg, state):
+        state.rows_by_prefix["SELECT p.project_id, mp.model_id"] = [self._degraded_row()]
+        state.rows_by_prefix["SELECT interview_responses"] = [self._config_row(destinations=[])]
+        notifications = FakeNotifications()
+        svc = ReconciliationService(state=state, notifications=notifications)
+
+        result = svc.reconcile_performance_alerts()
+
+        assert result.rows_changed == 0
+        assert not notifications.sent
+
+    def test_failure_recorded_not_raised(self, cfg, state):
+        class ExplodingState(ReconFakeState):
+            def _exec(self, sql, params=None):
+                if sql.strip().startswith("SELECT p.project_id, mp.model_id"):
+                    raise RuntimeError("model_performance unreachable")
+                return super()._exec(sql, params)
+
+        svc = ReconciliationService(state=ExplodingState(), notifications=FakeNotifications())
+
+        result = svc.reconcile_performance_alerts()
+
+        assert result.status == "failed"
+        assert "unreachable" in result.detail

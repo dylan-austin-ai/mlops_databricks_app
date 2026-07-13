@@ -276,6 +276,100 @@ def _progress_header(step: int, title: str) -> None:
     st.markdown("---")
 
 
+def _commit_step_files_if_applicable(step: int, step_data: dict) -> None:
+    """Owner request 2026-07-13: push the files this step's answers affect
+    right away instead of waiting for the final review step. Best-effort —
+    a commit failure here is surfaced but never blocks wizard progress; the
+    drift guard (BundleCommitService) protects any file the DS has already
+    hand-edited from being silently overwritten."""
+    from services.bundle_commit_service import STEP_CANDIDATE_FILES, BundleCommitService
+
+    if step not in STEP_CANDIDATE_FILES:
+        return
+    project_id = st.session_state.get("current_project_id")
+    repo_url = st.session_state.get("step1_provision_repo_url")
+    if not project_id or not repo_url:
+        return  # Step 1 hasn't provisioned a repo (no token, or skipped) -- nothing to push into
+    match = re.match(r"^https://github\.com/([^/]+)/([^/]+)/?$", repo_url)
+    if not match:
+        return
+    repo_full_name = f"{match.group(1)}/{match.group(2)}"
+
+    s1 = iv.get_step_data(st.session_state, 1)
+    all_responses = iv.get_all_responses(st.session_state)
+    try:
+        results = BundleCommitService(get_config()).commit_step_files(
+            project_id,
+            repo_full_name,
+            step,
+            s1.get("project_name", ""),
+            s1.get("team_name", ""),
+            s1.get("owner_email", ""),
+            all_responses,
+        )
+        blocked = [r for r in results if r["status"] == "blocked_drift"]
+        committed = [r for r in results if r["status"] == "ok"]
+        newly_stale = [r for r in results if r["status"] == "pending_deletion"]
+        if committed:
+            st.toast(f"Pushed {len(committed)} updated file(s) to the repo.", icon="✅")
+        if blocked:
+            # st.toast (not st.warning) deliberately -- this fires right
+            # before st.rerun() navigates to the next step, and toast is the
+            # one Streamlit primitive documented to survive across a rerun.
+            st.toast(
+                f"{len(blocked)} file(s) weren't auto-updated (hand-edited since generation): "
+                + ", ".join(r["path"] for r in blocked),
+                icon="⚠️",
+            )
+        if newly_stale:
+            st.toast(
+                f"{len(newly_stale)} file(s) no longer apply given this answer — see the Activity Log "
+                "below for what to delete or archive yourself: " + ", ".join(r["path"] for r in newly_stale),
+                icon="🗑️",
+            )
+    except Exception as exc:
+        st.toast(f"Could not push generated files for this step: {exc}", icon="⚠️")
+
+
+def _snapshot_training_data_if_applicable(step: int, step_data: dict) -> None:
+    """Owner request 2026-07-13: "training data needs to be versioned and
+    persisted so it can be faithfully recreated at a later date." Fires a
+    Delta DEEP CLONE snapshot for every training dataset named in Step 3,
+    skipping any already snapshotted for this project (idempotent)."""
+    if step != 3 or not step_data.get("data_complete", True):
+        return
+    training_datasets = step_data.get("training_datasets") or []
+    if not training_datasets:
+        return
+    project_id = st.session_state.get("current_project_id")
+    if not project_id:
+        return
+
+    from services.state_service import StateService
+
+    state = StateService(get_config())
+    uc_schemas_action = state.get_last_infrastructure_action(project_id, "uc_schemas")
+    dest_schema = uc_schemas_action["resource_id"] if uc_schemas_action else ""
+    if not dest_schema:
+        return  # Step 1 hasn't provisioned a dev schema yet -- nothing to clone into
+
+    s1 = iv.get_step_data(st.session_state, 1)
+    try:
+        from services.data_versioning_service import DataVersioningService
+
+        results = DataVersioningService(get_config(), state=state).snapshot_all(
+            project_id, training_datasets, dest_schema, s1.get("owner_email", "")
+        )
+        ok = [r for r in results if "snapshot_table" in r]
+        failed = [r for r in results if "error" in r]
+        if ok:
+            st.toast(f"Versioned {len(ok)} training dataset(s) for later reproduction.", icon="📦")
+        if failed:
+            st.toast(f"Could not version {len(failed)} training dataset(s) — see project dashboard.", icon="⚠️")
+    except Exception as exc:
+        st.toast(f"Training data versioning failed: {exc}", icon="⚠️")
+
+
 def _nav(step: int, errors: list[str], step_data: dict) -> None:
     st.markdown("---")
     col_back, col_spacer, col_next = st.columns([1, 4, 1])
@@ -293,6 +387,8 @@ def _nav(step: int, errors: list[str], step_data: dict) -> None:
                     st.error(e)
             else:
                 iv.save_step_data(st.session_state, step, step_data)
+                _commit_step_files_if_applicable(step, step_data)
+                _snapshot_training_data_if_applicable(step, step_data)
                 iv.set_step(st.session_state, step + 1)
                 st.rerun()
 
@@ -306,10 +402,24 @@ def _validation_box(errors: list[str]) -> None:
 # ── Step 1: Basic Info ────────────────────────────────────────────────────────
 
 
+def _step1_provisioning_service():
+    from services.project_provisioning_service import ProjectProvisioningService
+
+    return ProjectProvisioningService(get_config())
+
+
 def _step1() -> None:
     _progress_header(1, "Basic Info")
 
     prev = iv.get_step_data(st.session_state, 1)
+
+    project_id = st.session_state.get("current_project_id")
+    locked = False
+    if project_id:
+        try:
+            locked = _step1_provisioning_service().is_step1_provisioned(project_id)
+        except Exception:
+            locked = False  # fail open on the lock check -- never block editing on a transient error
 
     _name_key = "p1_project_name"
 
@@ -322,16 +432,30 @@ def _step1() -> None:
     if _name_key not in st.session_state:
         st.session_state[_name_key] = prev.get("project_name", "")
 
-    project_name = st.text_input(
-        "Model name *",
-        key=_name_key,
-        on_change=_sanitize_name,
-        placeholder="customer_churn_prediction",
-        help=(
-            "Auto-corrected to lowercase alphanumeric + underscores on each keystroke. "
-            "Becomes your GitHub repo name and UC schema prefix."
-        ),
-    )
+    if locked:
+        st.info(
+            "🔒 Infrastructure already created for this project (GitHub repo, UC schemas, MLflow experiment) — "
+            "the model name is locked to keep those in sync. Renaming now would orphan the existing resources "
+            "rather than rename them.",
+            icon="🔒",
+        )
+        st.text_input(
+            "Model name *",
+            value=prev.get("project_name", ""),
+            disabled=True,
+        )
+        project_name = prev.get("project_name", "")
+    else:
+        project_name = st.text_input(
+            "Model name *",
+            key=_name_key,
+            on_change=_sanitize_name,
+            placeholder="customer_churn_prediction",
+            help=(
+                "Auto-corrected to lowercase alphanumeric + underscores on each keystroke. "
+                "Becomes your GitHub repo name and UC schema prefix."
+            ),
+        )
 
     problem_statement = st.text_area(
         "What business problem does it solve? *",
@@ -392,16 +516,99 @@ def _step1() -> None:
         help="Primary contact for monitoring alerts and approval requests.",
     )
 
+    existing_repo_url = st.text_input(
+        "Existing GitHub repo (optional)",
+        value=prev.get("existing_repo_url", ""),
+        placeholder="https://github.com/your-org/your-repo",
+        help=(
+            "Leave blank and the app creates a new private repo. Paste a link and the app pushes "
+            "the generated scaffold into it instead — the repo must be empty (a README/.gitignore/"
+            "LICENSE stamped in by your org's repo-creation automation is fine; anything else blocks it)."
+        ),
+    )
+
     data = {
         "project_name": project_name,  # already sanitized by on_change callback
         "problem_statement": problem_statement.strip(),
         "success_metric": success_metric.strip(),
         "team_name": team_name.strip(),
         "owner_email": owner_email.strip().lower(),
+        "existing_repo_url": existing_repo_url.strip(),
     }
     errors = iv.validate_step(1, data) if any(data.values()) else []
     _validation_box(errors)
-    _nav(1, errors, data)
+    _step1_nav(errors, data)
+
+
+def _step1_nav(errors: list[str], data: dict) -> None:
+    """Owner request 2026-07-13: Step 1 unlocks real infrastructure (GitHub
+    repo, UC schemas + Volumes, MLflow experiment, Budget Policy) instead of
+    waiting for the final "Create Project!" waterfall — see
+    services/project_provisioning_service.py. Two-phase like the old
+    _create_project(): "Next →" fires provisioning and shows what happened;
+    a separate "Continue →" (shown once results exist) actually advances, so
+    the DS sees the outcome instead of it flashing by mid-rerun."""
+    st.markdown("---")
+
+    if st.session_state.get("step1_provision_steps") is not None:
+        for step in st.session_state["step1_provision_steps"]:
+            icon = "✅" if step["status"] == "ok" else ("⏭️" if step["status"] == "skipped" else "⚠️")
+            label = step["name"].replace("_", " ").title()
+            detail = f" — {step['detail'][:100]}" if step.get("detail") else ""
+            st.write(f"{icon} {label}{detail}")
+        repo_url = st.session_state.get("step1_provision_repo_url")
+        if repo_url:
+            st.link_button("Open GitHub Repo ↗", repo_url)
+
+        col_spacer, col_continue = st.columns([4, 1])
+        with col_continue:
+            if st.button("Continue →", use_container_width=True, type="primary"):
+                iv.set_step(st.session_state, 2)
+                st.rerun()
+        return
+
+    col_spacer, col_next = st.columns([4, 1])
+    with col_next:
+        if st.button("Next →", use_container_width=True, type="primary" if not errors else "secondary"):
+            if errors:
+                for e in errors:
+                    st.error(e)
+                return
+            iv.save_step_data(st.session_state, 1, data)
+
+            with st.spinner("Provisioning project infrastructure..."):
+                try:
+                    from services.state_service import StateService
+
+                    state = StateService(get_config())
+                    project_id = st.session_state.get("current_project_id")
+                    if not project_id:
+                        project_id = state.create_project(
+                            project_name=data["project_name"],
+                            owner_email=data["owner_email"],
+                            team_name=data["team_name"],
+                            problem_statement=data["problem_statement"],
+                            created_by=data["owner_email"],
+                        )
+                        st.session_state["current_project_id"] = project_id
+                        state.save_project_config(
+                            project_id=project_id, interview_responses=data, created_by=data["owner_email"]
+                        )
+                        state.update_project_status(project_id, "development", data["owner_email"])
+
+                    result = _step1_provisioning_service().provision_step1(
+                        project_id, data["project_name"], data["owner_email"], data
+                    )
+                    st.session_state["step1_provision_steps"] = result.steps
+                    st.session_state["step1_provision_repo_url"] = result.github_repo_url
+                except Exception as exc:
+                    st.error(f"Provisioning failed: {exc}", icon="❌")
+                    import traceback
+
+                    with st.expander("Error details"):
+                        st.code(traceback.format_exc())
+                    return
+            st.rerun()
 
 
 # ── Step 2: Model Specs ───────────────────────────────────────────────────────
@@ -546,6 +753,29 @@ def _step2() -> None:
 
     data["model_frameworks"] = model_frameworks
 
+    st.markdown("---")
+    st.markdown("**Accelerants (optional)**")
+    st.caption(
+        "Purely additive — your own training code in `train.py` stays authoritative either way. "
+        "These generate extra files you can use, adapt, or delete."
+    )
+    acc1, acc2 = st.columns(2)
+    with acc1:
+        use_automl_baseline = st.checkbox(
+            "Want a baseline model trained automatically? (Databricks AutoML)",
+            value=prev.get("use_automl_baseline", False),
+            help="Generates automl_baseline.py — a disposable first model and a score to beat.",
+        )
+    with acc2:
+        use_hyperparameter_search = st.checkbox(
+            "Want a hyperparameter search scaffold? (Optuna + MLflow)",
+            value=prev.get("use_hyperparameter_search", False),
+            help="Generates hyperparameter_search.py — real Optuna trial-loop mechanics; "
+            "your model + search space still need to be filled in.",
+        )
+    data["use_automl_baseline"] = use_automl_baseline
+    data["use_hyperparameter_search"] = use_hyperparameter_search
+
     errors = iv.validate_step(2, data)
     _validation_box(errors)
     _nav(2, errors, data)
@@ -577,6 +807,7 @@ def _step3() -> None:
             "training_datasets": prev.get("training_datasets", []),
             "target_variable": prev.get("target_variable", ""),
             "feature_columns": prev.get("feature_columns", []),
+            "feature_catalog_resolutions": prev.get("feature_catalog_resolutions", {}),
             "training_data_size_rows": prev.get("training_data_size_rows"),
             "contains_pii": prev.get("contains_pii", False),
             "pii_columns": prev.get("pii_columns", []),
@@ -653,6 +884,78 @@ def _step3() -> None:
         elif st.session_state.get("step3_infer_error"):
             st.warning(f"Schema inference failed: {st.session_state['step3_infer_error']}")
 
+    # ── Data profiling (owner request 2026-07-13) ──────────────────────────────
+    profile_col, profile_status = st.columns([2, 5])
+    with profile_col:
+        if st.button(
+            "📊 Profile Data",
+            help=(
+                "Sample the first dataset and generate a full pandas-profiling-style report, "
+                "plus per-column stats that seed the Data Quality Gates suggestion in Step 4."
+            ),
+            disabled=not training_datasets,
+        ):
+            first_table = training_datasets[0] if training_datasets else ""
+            if first_table:
+                with st.spinner(f"Profiling `{first_table}`..."):
+                    try:
+                        from services.data_profiling_service import DataProfilingService
+
+                        profiler = DataProfilingService()
+                        if inferred_cols:
+                            st.session_state["step3_quick_stats"] = profiler.quick_stats(first_table, inferred_cols)
+                        result = profiler.full_profile(first_table)
+                        st.session_state["step3_full_profile_html"] = result.html
+                        st.session_state["step3_profile_summary"] = {
+                            "row_count": result.row_count,
+                            "column_count": result.column_count,
+                            "missing_cells_pct": result.missing_cells_pct,
+                            "duplicate_rows_pct": result.duplicate_rows_pct,
+                        }
+                        st.session_state.pop("step3_profile_error", None)
+
+                        # Owner request 2026-07-13 (A): auto-save to the
+                        # project's Volume the moment it's generated, not
+                        # just offered as a download -- best-effort, never
+                        # blocks the profiling result itself.
+                        project_id = st.session_state.get("current_project_id")
+                        if project_id:
+                            try:
+                                from services.state_service import StateService
+                                from services.volume_artifact_service import VolumeArtifactService
+
+                                vol_action = StateService(get_config()).get_last_infrastructure_action(
+                                    project_id, "uc_volumes"
+                                )
+                                volume_path = vol_action["resource_id"] if vol_action else ""
+                                if volume_path:
+                                    saved_path = VolumeArtifactService().save_profile_report(
+                                        volume_path, first_table, result.html
+                                    )
+                                    st.toast(f"Profile report saved to {saved_path}", icon="📦")
+                            except Exception as exc:
+                                st.toast(f"Could not save profile report to Volume: {exc}", icon="⚠️")
+                    except Exception as exc:
+                        st.session_state["step3_profile_error"] = str(exc)
+    with profile_status:
+        summary = st.session_state.get("step3_profile_summary")
+        if summary:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Rows sampled", f"{summary['row_count']:,}")
+            m2.metric("Columns", summary["column_count"])
+            m3.metric("Missing cells", f"{summary['missing_cells_pct']:.1f}%")
+            m4.metric("Duplicate rows", f"{summary['duplicate_rows_pct']:.1f}%")
+        elif st.session_state.get("step3_profile_error"):
+            st.warning(f"Profiling failed: {st.session_state['step3_profile_error']}")
+
+    if st.session_state.get("step3_full_profile_html"):
+        st.download_button(
+            "⬇ Download full profile report (HTML)",
+            data=st.session_state["step3_full_profile_html"],
+            file_name="data_profile_report.html",
+            mime="text/html",
+        )
+
     st.markdown("---")
 
     # ── Target variable & features — selectbox if schema inferred, text otherwise ─
@@ -688,6 +991,66 @@ def _step3() -> None:
             help="Comma-separated list. Click 'Infer Schema' to load from UC automatically.",
         )
         feature_columns = [f.strip() for f in features_raw.split(",") if f.strip()]
+
+    # ── Feature Catalog coercion (§8.5 nudge, owner request 2026-07-13) ───────
+    # A structural nudge toward reusing an already-established shared feature
+    # instead of silently declaring a duplicate — checked once per session
+    # per catalog load, matched locally against selected columns rather than
+    # one catalog_search() round-trip per column.
+    feature_catalog_resolutions: dict[str, dict] = prev.get("feature_catalog_resolutions", {})
+    if feature_columns:
+        try:
+            from services.feature_contract_service import FeatureContractService
+
+            shared_features = FeatureContractService().catalog_search(shared_only=True)
+        except Exception:
+            shared_features = []
+
+        by_name = {str(f["feature_name"]).lower(): f for f in shared_features}
+        matches = {col: by_name[col.lower()] for col in feature_columns if col.lower() in by_name}
+
+        if matches:
+            st.markdown("---")
+            st.markdown("**Feature Catalog matches found**")
+            st.caption(
+                f"{len(matches)} of your selected feature(s) already exist as shared features. "
+                "Reusing them keeps lineage and freshness guarantees the catalog already tracks — "
+                "prefer them over a new ad-hoc definition unless you have a real reason not to."
+            )
+            new_resolutions: dict[str, dict] = {}
+            for col, feat in matches.items():
+                prev_res = feature_catalog_resolutions.get(col, {})
+                with st.container(border=True):
+                    st.markdown(
+                        f"`{col}` matches **{feat['feature_name']}** "
+                        f"(owned by {feat.get('owner_team', 'unknown')}, "
+                        f"used by {feat.get('used_by_models', 0)} model(s), "
+                        f"table `{feat.get('feature_table_name', '—')}`)"
+                    )
+                    use_shared = st.checkbox(
+                        f"Use the established `{feat['feature_name']}` for `{col}`",
+                        value=prev_res.get("resolved", "shared") == "shared",
+                        key=f"fc_use_shared_{col}",
+                    )
+                    if use_shared:
+                        new_resolutions[col] = {
+                            "resolved": "shared",
+                            "feature_id": feat["feature_id"],
+                            "feature_table_name": feat.get("feature_table_name", ""),
+                            "feature_column_name": col,
+                        }
+                    else:
+                        justification = st.text_input(
+                            "Why does this need a separate definition instead of the shared one? *",
+                            value=prev_res.get("justification", ""),
+                            key=f"fc_just_{col}",
+                            placeholder="The shared definition excludes X, which this model needs because...",
+                        )
+                        new_resolutions[col] = {
+                            "resolved": "adhoc",
+                            "justification": justification,
+                        }
+            feature_catalog_resolutions = new_resolutions
 
     training_data_size_rows = st.number_input(
         "Approximate training rows",
@@ -969,11 +1332,18 @@ def _step3() -> None:
             if not pii_suppression_methods.get(col):
                 pii_errors.append(f"PII column `{col}`: select at least one suppression method.")
 
+    # Feature Catalog coercion — an ad-hoc override needs its justification
+    catalog_errors: list[str] = []
+    for col, res in feature_catalog_resolutions.items():
+        if res.get("resolved") == "adhoc" and not res.get("justification", "").strip():
+            catalog_errors.append(f"`{col}`: justify keeping a separate definition instead of the shared feature.")
+
     data = {
         "data_complete": True,
         "training_datasets": training_datasets,
         "target_variable": target_variable.strip() if isinstance(target_variable, str) else target_variable,
         "feature_columns": feature_columns,
+        "feature_catalog_resolutions": feature_catalog_resolutions,
         "training_data_size_rows": training_data_size_rows if training_data_size_rows > 0 else None,
         "contains_pii": contains_pii,
         "pii_columns": pii_columns,
@@ -987,7 +1357,7 @@ def _step3() -> None:
         "field_justifications": {},
     }
 
-    errors = (iv.validate_step(3, data) if (training_datasets or target_variable) else []) + pii_errors
+    errors = (iv.validate_step(3, data) if (training_datasets or target_variable) else []) + pii_errors + catalog_errors
     _validation_box(errors)
     _nav(3, errors, data)
 
@@ -1227,16 +1597,25 @@ def _step4() -> None:
         _dq_req_key = "step4_dq_required"
         _dq_acc_key = "step4_dq_acceptable"
 
-        # Initialize from prev data or from all_features (all required by default)
+        # Initialize from prev data or from all_features (required by default,
+        # unless Step 3's Profile Data run suggests otherwise — owner request
+        # 2026-07-13: a column already frequently null in real sampled data
+        # defaults to Acceptable rather than hard-blocking on its own baseline).
         if _dq_req_key not in st.session_state:
+            quick_stats = st.session_state.get("step3_quick_stats", {})
             prev_req = prev.get("data_quality_required_fields", all_features)
             prev_acc = prev.get("data_quality_acceptable_issues", [])
             st.session_state[_dq_req_key] = [f for f in prev_req if f in all_features]
             st.session_state[_dq_acc_key] = [f for f in prev_acc if f in all_features]
-            # Any features missing from both boxes go to required
+            # Any features missing from both boxes get a profiling-informed default
             both = set(st.session_state[_dq_req_key]) | set(st.session_state[_dq_acc_key])
             for f in all_features:
-                if f not in both:
+                if f in both:
+                    continue
+                stat = quick_stats.get(f)
+                if stat is not None and stat.suggested_dq_box == "acceptable":
+                    st.session_state[_dq_acc_key].append(f)
+                else:
                     st.session_state[_dq_req_key].append(f)
 
         dq_required: list[str] = st.session_state[_dq_req_key]
@@ -1764,6 +2143,65 @@ def _step6() -> None:
     if not alert_destination_configs:
         alert_destination_configs = [{"destination": "email", "email_addresses": []}]
 
+    st.markdown("---")
+    st.markdown("**Budget alerts**")
+    st.caption(
+        "Optional — get notified when this project's spend (§17.3 mlops.cost_tracking) "
+        "crosses a threshold. Uses the email addresses configured above."
+    )
+
+    budget_alerts_enabled = st.checkbox(
+        "Enable budget alerts for this project",
+        value=prev.get("budget_alerts_enabled", False),
+    )
+    budget_period = "monthly"
+    budget_threshold_usd = 0.0
+    budget_alert_at_pct = 80.0
+    if budget_alerts_enabled:
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            budget_period = st.selectbox(
+                "Period",
+                options=["monthly", "quarterly", "annual"],
+                index=["monthly", "quarterly", "annual"].index(prev.get("budget_period", "monthly")),
+            )
+        with b2:
+            budget_threshold_usd = st.number_input(
+                "Threshold (USD)",
+                min_value=0.0,
+                value=float(prev.get("budget_threshold_usd", 0.0)),
+                step=100.0,
+            )
+        with b3:
+            budget_alert_at_pct = st.slider(
+                "Alert at (% of threshold)",
+                min_value=10,
+                max_value=100,
+                value=int(prev.get("budget_alert_at_pct", 80)),
+            )
+        email_recipients = next(
+            (c.get("email_addresses", []) for c in alert_destination_configs if c["destination"] == "email"), []
+        )
+        if not email_recipients:
+            st.warning("Add an email alert destination above to receive budget alerts.", icon="⚠️")
+
+    st.markdown("---")
+    st.markdown("**Cost attribution (Databricks Budget Policy)**")
+    st.caption(
+        "Optional — attribute this project's serverless usage (jobs, serving endpoints; "
+        "budget policies only apply to serverless compute) to a specific Databricks Budget "
+        "Policy. Leave blank and the app creates/reuses one for this project automatically, "
+        "falling back to the control-plane default — or skips attribution entirely if "
+        "account-level credentials aren't configured."
+    )
+    budget_policy_id = st.text_input(
+        "Budget policy ID (optional)",
+        value=prev.get("budget_policy_id", ""),
+        placeholder="Leave blank to auto-create/use the default",
+        help="Paste an existing Databricks account-level Budget Policy id to use it as-is "
+        "instead of one the app would create or reuse for this project.",
+    )
+
     data = {
         "monitor_data_drift": monitor_data_drift,
         "monitor_performance_drift": monitor_performance_drift,
@@ -1776,6 +2214,11 @@ def _step6() -> None:
         "custom_monitoring_metrics": custom_metrics.strip(),
         "alert_destination_configs": alert_destination_configs,
         "alert_destinations": alert_destinations,  # kept for downstream compat
+        "budget_alerts_enabled": budget_alerts_enabled,
+        "budget_period": budget_period,
+        "budget_threshold_usd": budget_threshold_usd,
+        "budget_alert_at_pct": budget_alert_at_pct,
+        "budget_policy_id": budget_policy_id.strip(),
     }
 
     errors = iv.validate_step(6, data)
@@ -2048,17 +2491,24 @@ def _review() -> None:
                 st.caption(f"{label}: {email}")
 
     st.markdown("---")
-    st.markdown("**What happens next:**")
-    project_name = s1.get("project_name", "your-project")
-    cfg = get_config()
-    github_org = cfg.github_org or "your-org"
+    repo_url = st.session_state.get("step1_provision_repo_url")
+    if st.session_state.get("current_project_id"):
+        st.markdown("**Already provisioned (Step 1):**")
+        already = [
+            f"GitHub repo: `{repo_url}`" if repo_url else "GitHub repo (see Step 1 results)",
+            "UC schemas + `artifacts` Volume (dev/staging in the non-prod catalog, prod schema reserved)",
+            "MLflow experiment",
+            "Budget Policy, if account credentials are configured",
+        ]
+        for item in already:
+            st.write(f"✅ {item}")
+        st.markdown('**What "Create Project!" still does:**')
+    else:
+        st.markdown("**What happens next:**")
     items = [
-        f"GitHub repo created: `github.com/{github_org}/{project_name}`",
-        "Training skeleton generated (`src/train.py`, `src/preprocess.py`, tests/)",
-        "CI/CD pipelines configured in `.github/workflows/`",
-        f"UC schemas created: `{cfg.catalog}.{project_name}_dev` / `_staging` / `_prod`",
-        "Service account and secret scope provisioned",
-        "Monitoring dashboards and Databricks Workflows deployed",
+        "Record the final approved config version (hashed for approval sign-off)",
+        "Sync risk tier + policy packs",
+        "Save budget alert config, if enabled in Step 6",
     ]
     for item in items:
         st.write(f"1. {item}")
@@ -2075,6 +2525,13 @@ def _review() -> None:
 
 
 def _create_project(all_responses: dict, s1: dict) -> None:
+    """Owner request 2026-07-13: most infrastructure now fires progressively
+    per-step (Step 1's GitHub/UC/MLflow/Budget-Policy via
+    ProjectProvisioningService, wired in _step1_nav()). This final action is
+    what's left: record the approved final config version, sync risk
+    tier/policy packs, save the budget alert, and mark the baseline. It only
+    falls back to running full Step 1 provisioning itself if current_project_id
+    is somehow missing — normal flow never hits that branch."""
     cfg = get_config()
 
     if not cfg.is_connected:
@@ -2084,20 +2541,33 @@ def _create_project(all_responses: dict, s1: dict) -> None:
     project_name = s1["project_name"]
     owner_email = s1["owner_email"]
 
-    with st.spinner("Creating project infrastructure..."):
+    with st.spinner("Finalizing project..."):
         try:
-            from services.generator_service import ProjectInfrastructureGenerator
             from services.state_service import StateService
 
             svc = StateService()
 
-            project_id = svc.create_project(
-                project_name=project_name,
-                owner_email=owner_email,
-                team_name=s1["team_name"],
-                problem_statement=s1["problem_statement"],
-                created_by=owner_email,
-            )
+            project_id = st.session_state.get("current_project_id")
+            fallback_steps: list[dict] = []
+            if not project_id:
+                # Defensive fallback only — normal flow always has this from
+                # Step 1. Ensures the invariant "every created project has
+                # real infra" holds even if Step 1 was somehow bypassed.
+                project_id = svc.create_project(
+                    project_name=project_name,
+                    owner_email=owner_email,
+                    team_name=s1["team_name"],
+                    problem_statement=s1["problem_statement"],
+                    created_by=owner_email,
+                )
+                st.session_state["current_project_id"] = project_id
+                fallback_result = _step1_provisioning_service().provision_step1(
+                    project_id, project_name, owner_email, all_responses
+                )
+                fallback_steps = fallback_result.steps
+
+            # New versioned snapshot capturing the FULL final config — Step 1
+            # only saved Step-1-scoped data; this is the approved baseline.
             svc.save_project_config(
                 project_id=project_id,
                 interview_responses=all_responses,
@@ -2122,42 +2592,47 @@ def _create_project(all_responses: dict, s1: dict) -> None:
             except Exception as exc:
                 st.warning(f"Risk tier could not be recorded: {exc}", icon="⚠️")
 
-            gen = ProjectInfrastructureGenerator(cfg)
-            gen_result = gen.generate(project_name, owner_email, all_responses)
-
-            if gen_result.github_repo_url:
-                svc.update_project_github(
-                    project_id,
-                    repo_url=gen_result.github_repo_url,
-                    repo_name=gen_result.github_repo_name,
-                    updated_by=owner_email,
-                )
-            if gen_result.uc_schema_dev:
-                svc.update_project_schemas(
-                    project_id,
-                    uc_schema_dev=gen_result.uc_schema_dev,
-                    uc_schema_staging=gen_result.uc_schema_staging,
-                    uc_schema_prod=gen_result.uc_schema_prod,
-                    mlflow_experiment_id=gen_result.mlflow_experiment_id,
-                    secret_scope_name=gen_result.secret_scope_name,
-                    updated_by=owner_email,
-                )
+            # §17.3: budget_alerts config, if the owner opted in on step 6
+            if all_responses.get("budget_alerts_enabled"):
+                try:
+                    email_recipients = next(
+                        (
+                            c.get("email_addresses", [])
+                            for c in all_responses.get("alert_destination_configs", [])
+                            if c.get("destination") == "email"
+                        ),
+                        [],
+                    )
+                    svc.save_budget_alert(
+                        project_id,
+                        budget_period=all_responses.get("budget_period", "monthly"),
+                        budget_threshold_usd=float(all_responses.get("budget_threshold_usd", 0.0)),
+                        alert_at_pct=float(all_responses.get("budget_alert_at_pct", 80.0)),
+                        enabled=True,
+                        alert_recipients=email_recipients,
+                    )
+                except Exception as exc:
+                    st.warning(f"Budget alert could not be recorded: {exc}", icon="⚠️")
 
             st.success(f"**Project `{project_name}` created!** (ID: `{project_id}`)", icon="✅")
-            st.markdown("**Infrastructure steps:**")
-            for step in gen_result.steps:
+            st.markdown("**Infrastructure steps** (provisioned progressively as you completed the wizard):")
+            for step in st.session_state.get("step1_provision_steps", fallback_steps):
                 icon = "✅" if step["status"] == "ok" else ("⏭️" if step["status"] == "skipped" else "⚠️")
                 label = step["name"].replace("_", " ").title()
                 detail = f" — {step['detail'][:80]}" if step.get("detail") else ""
                 st.write(f"{icon} {label}{detail}")
 
-            if gen_result.github_repo_url:
-                st.link_button("Open GitHub Repo ↗", gen_result.github_repo_url)
+            repo_url = st.session_state.get("step1_provision_repo_url")
+            if repo_url:
+                st.link_button("Open GitHub Repo ↗", repo_url)
 
             st.session_state["last_created_project_id"] = project_id
             for _key in [
                 iv.INTERVIEW_KEY,
                 iv.CURRENT_STEP_KEY,
+                "current_project_id",
+                "step1_provision_steps",
+                "step1_provision_repo_url",
                 "step3_datasets",
                 "step3_inferred_columns",
                 "step3_inferred_types",
@@ -2186,6 +2661,52 @@ def _create_project(all_responses: dict, s1: dict) -> None:
                 st.code(traceback.format_exc())
 
 
+def _render_activity_log() -> None:
+    """Owner request 2026-07-13: "does the UI show actions that were taken
+    based on responses?" — Step 1 did (a persistent list), Steps 2-6 only
+    fired a transient st.toast(), and nowhere surfaced the full durable
+    history already being recorded in project_infrastructure_actions. This
+    closes that gap — one place, visible from every step, that lists
+    everything the app has actually done for this project so far."""
+    project_id = st.session_state.get("current_project_id")
+    if not project_id:
+        return
+    try:
+        from services.state_service import StateService
+
+        actions = StateService(get_config()).list_infrastructure_actions(project_id)
+    except Exception:
+        return  # never let a log-fetch failure break the wizard
+    if not actions:
+        return
+
+    _STATUS_ICON = {
+        "ok": "✅",
+        "skipped": "⏭️",
+        "preserved": "🔒",
+        "blocked_drift": "🛑",
+        "manual_action_required": "⚠️",
+        "pending_deletion": "🗑️",
+        "resolved": "✔️",
+        "failed": "❌",
+    }
+    with st.expander(f"📋 Activity Log ({len(actions)} action{'s' if len(actions) != 1 else ''})"):
+        for a in actions:
+            icon = _STATUS_ICON.get(a["status"], "•")
+            name = a["action_name"]
+            if name.startswith("file_commit:"):
+                label = f"File committed: `{name.split(':', 1)[1]}`"
+            elif name.startswith("file_stale:"):
+                label = f"Stale file: `{name.split(':', 1)[1]}`"
+            else:
+                label = name.replace("_", " ").title()
+            when = str(a.get("created_at", ""))[:19].replace("T", " ")
+            detail = f" — {a['detail']}" if a.get("detail") else ""
+            st.markdown(
+                f"{icon} **{label}**{detail}  \n<span style='color:#64748b'>{when}</span>", unsafe_allow_html=True
+            )
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 iv.init_session(st.session_state)
@@ -2199,6 +2720,7 @@ render_sidebar(
         + "</div>"
     )
 )
+_render_activity_log()
 
 _STEP_RENDERERS = {
     1: _step1,

@@ -1,12 +1,27 @@
-"""ProjectInfrastructureGenerator — orchestrates everything created when a project is born.
+"""ProjectInfrastructureGenerator — the individual provisioning actions a
+project can need, plus generate() which still runs all of them in one call
+for callers that want the old all-at-once behavior (tests, backfills).
 
-Steps executed in order:
+The main app no longer calls generate() directly (owner request 2026-07-13:
+progressive per-step provisioning instead of one waterfall at the end — see
+services/project_provisioning_service.py for the step-triggered
+orchestration and idempotency tracking). generate() runs, in order:
+  0. Resolve a budget policy for cost attribution (owner request 2026-07-12)
+     — wizard override, else an idempotent per-project policy, else the
+     control-plane default, else skipped entirely (needed before step 1,
+     since the resolved id is rendered into the bundle)
   1. Render the Databricks Asset Bundle scaffold via BundleService (temp dir),
      add .mlops/ platform files, git-init with an initial commit
   2. Create GitHub repo and push the scaffold
-  3. Create Databricks UC schemas (dev / staging / prod)
+  3. Create Databricks UC schemas (dev / staging / prod) and, for the
+     non-prod ones, an `artifacts` Volume in each
   4. Create MLflow experiment
-  5. Create Databricks secret scope
+
+Databricks secret scope creation (_create_secret_scope) is NOT called from
+generate() — traced every reference and found zero consumers (nothing reads
+or writes a secret through it), so eager creation was speculative
+infrastructure with nothing behind it. The method stays available for
+whenever a real consumer needs one.
 
 Each step is best-effort with its own status reported back to the caller.
 A failed GitHub step does not block UC schema creation, etc.
@@ -16,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -35,7 +51,10 @@ class GenerationResult:
     uc_schema_dev: str = ""
     uc_schema_staging: str = ""
     uc_schema_prod: str = ""
+    uc_volume_dev: str = ""
+    uc_volume_staging: str = ""
     secret_scope_name: str = ""
+    budget_policy_id: str = ""
     steps: list[dict[str, Any]] = field(default_factory=list)
 
     def add_step(self, name: str, status: str, detail: str = "") -> None:
@@ -51,10 +70,17 @@ class GenerationResult:
 
 
 class ProjectInfrastructureGenerator:
-    def __init__(self, config: AppConfig | None = None, bundle_service: Any = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        bundle_service: Any = None,
+        budget_policy_service: Any = None,
+    ) -> None:
         self._cfg = config or get_config()
         # Injectable for tests; defaults to a real BundleService on first use
         self._bundle = bundle_service
+        # Injectable for tests; defaults to a real BudgetPolicyService on first use
+        self._budget_policy = budget_policy_service
 
     def generate(
         self,
@@ -65,24 +91,88 @@ class ProjectInfrastructureGenerator:
         """Run all generation steps. Returns a result with per-step statuses."""
         result = GenerationResult(project_name=project_name)
 
+        # Step 0: resolve budget policy (must happen before scaffold render)
+        budget_policy_id = self._resolve_budget_policy(
+            project_name, interview_responses.get("team_name", ""), interview_responses, result
+        )
+
         # Step 1 + 2: scaffold code + push to GitHub
-        scaffold_dir = self._scaffold_code(project_name, owner_email, interview_responses, result)
+        scaffold_dir = self._scaffold_code(project_name, owner_email, interview_responses, result, budget_policy_id)
 
         if scaffold_dir and self._cfg.github_token:
             self._create_github_repo(project_name, owner_email, scaffold_dir, interview_responses, result)
         else:
             result.add_step("github_repo", "skipped", "GITHUB_TOKEN not set")
 
-        # Step 3: UC schemas
+        # Step 3: UC schemas + volumes
         self._create_uc_schemas(project_name, result)
+        self._create_uc_volumes(result)
 
         # Step 4: MLflow experiment
         self._create_mlflow_experiment(project_name, result)
 
-        # Step 5: Secret scope
-        self._create_secret_scope(project_name, result)
+        # Secret scope is deliberately NOT created here (owner request
+        # 2026-07-13): traced every reference to it and found zero consumers
+        # — no generated template reads or writes a secret through it. Eager
+        # creation was speculative infrastructure with nothing behind it.
+        # _create_secret_scope() stays available for whenever a real
+        # consumer needs one; nothing calls it yet.
 
         return result
+
+    # ── Step 0: budget policy resolution ─────────────────────────────────────
+
+    def _resolve_budget_policy(
+        self,
+        project_name: str,
+        team_name: str,
+        interview_responses: dict[str, Any],
+        result: GenerationResult,
+    ) -> str:
+        """Owner request 2026-07-12. An explicit wizard override wins outright
+        (already resolved, no API call needed). Otherwise an idempotent
+        per-project policy is created, falling back to the control-plane
+        default on a real failure, falling back to no attribution at all
+        when account credentials aren't configured (§25) — this step never
+        blocks project creation."""
+        override = str(interview_responses.get("budget_policy_id") or "").strip()
+        if override:
+            result.budget_policy_id = override
+            result.add_step("budget_policy", "ok", f"wizard override: {override}")
+            return override
+
+        from services.budget_policy_service import BudgetPolicyService, BudgetPolicyUnavailable
+
+        if self._budget_policy is None:
+            self._budget_policy = BudgetPolicyService(self._cfg)
+        svc = self._budget_policy
+        try:
+            handle = svc.ensure_policy(
+                f"mlops-{project_name}",
+                {"project_id": project_name, "team": team_name, "managed_by": "mlops_control_plane"},
+            )
+            result.budget_policy_id = handle.policy_id
+            status = "reused" if handle.already_existed else "created"
+            result.add_step("budget_policy", "ok", f"{status}: {handle.policy_id}")
+            return handle.policy_id
+        except BudgetPolicyUnavailable as exc:
+            result.add_step("budget_policy", "skipped", str(exc))
+            return ""
+        except Exception as exc:
+            try:
+                handle = svc.ensure_default_policy()
+                result.budget_policy_id = handle.policy_id
+                result.add_step(
+                    "budget_policy", "ok", f"fell back to control-plane default ({exc}): {handle.policy_id}"
+                )
+                return handle.policy_id
+            except Exception as fallback_exc:
+                result.add_step(
+                    "budget_policy",
+                    "skipped",
+                    f"per-project policy failed ({exc}); default also unavailable ({fallback_exc})",
+                )
+                return ""
 
     # ── Step 1: scaffold ──────────────────────────────────────────────────────
 
@@ -92,6 +182,7 @@ class ProjectInfrastructureGenerator:
         owner_email: str,
         interview_responses: dict[str, Any],
         result: GenerationResult,
+        budget_policy_id: str = "",
     ) -> Path | None:
         try:
             from services.bundle_service import BundleService
@@ -106,6 +197,7 @@ class ProjectInfrastructureGenerator:
                 owner_email=owner_email,
                 interview_responses=interview_responses,
                 output_dir=tmp,
+                budget_policy_id=budget_policy_id,
             )
 
             # Write .mlops/ platform files into the scaffold
@@ -189,6 +281,94 @@ class ProjectInfrastructureGenerator:
         script_path = scripts_dir / "check_change_scope.py"
         script_path.write_text(check_scope_script)
         script_path.chmod(0o755)
+
+        # QA/dev reaper, invoked by deploy_prod.yml before deploying (owner
+        # request 2026-07-13). Self-contained (databricks-sdk only) — this
+        # runs inside the PROJECT's own CI, which doesn't have this app's
+        # services/ package. Mirrors services/qa_cleanup_service.py's logic;
+        # not shared code, different repos.
+        cleanup_script = self._cleanup_qa_script(project_name)
+        cleanup_path = scripts_dir / "cleanup_qa_resources.py"
+        cleanup_path.write_text(cleanup_script)
+        cleanup_path.chmod(0o755)
+
+    @staticmethod
+    def _cleanup_qa_script(project_name: str) -> str:
+        return f'''#!/usr/bin/env python3
+"""Delete non-essential dev/QA-only endpoints and scratch tables before a
+prod deploy (owner request 2026-07-13) -- so prod doesn't inherit
+exploration clutter (e.g. "{project_name}_v25"). Mirrors
+services/qa_cleanup_service.py's logic (not shared code -- this runs inside
+this project's own CI, a different repo than the control-plane app).
+
+Deliberately conservative, same as the in-app version:
+  - endpoints: only ones prefixed "{project_name}" and NOT the bundle's own
+    managed endpoint names are deleted.
+  - tables: only ones in this project's non-prod schema(s) prefixed
+    zz_/scratch_/tmp_ are deleted. Everything else is left alone.
+
+Best-effort -- failures are printed but never fail the CI job (this script
+is invoked with `continue-on-error: true` in deploy_prod.yml).
+
+Env vars required: DATABRICKS_HOST, DATABRICKS_TOKEN.
+"""
+
+import os
+
+from databricks.sdk import WorkspaceClient
+
+PROJECT_NAME = {project_name!r}
+SCRATCH_TABLE_PREFIXES = ("zz_", "scratch_", "tmp_")
+KEEP_ENDPOINT_NAMES = {{f"{{PROJECT_NAME}}-dev", f"{{PROJECT_NAME}}-staging", f"{{PROJECT_NAME}}-prod"}}
+# Non-prod schemas to sweep for scratch tables -- ${{var.catalog}}/${{var.schema}}
+# resolve per-target in the bundle itself; here we read them from the
+# deploying environment's own catalog/schema variables.
+NON_PROD_SCHEMAS = [
+    s
+    for s in (os.environ.get("MLOPS_DEV_SCHEMA", ""), os.environ.get("MLOPS_STAGING_SCHEMA", ""))
+    if s
+]
+
+
+def cleanup_endpoints(ws: WorkspaceClient) -> None:
+    for ep in ws.serving_endpoints.list():
+        if ep.name in KEEP_ENDPOINT_NAMES:
+            continue
+        if ep.name.startswith(f"{{PROJECT_NAME}}_") or ep.name.startswith(f"{{PROJECT_NAME}}-"):
+            try:
+                ws.serving_endpoints.delete(name=ep.name)
+                print(f"deleted endpoint: {{ep.name}}")
+            except Exception as exc:
+                print(f"WARNING: could not delete endpoint {{ep.name}}: {{exc}}")
+
+
+def cleanup_tables(ws: WorkspaceClient) -> None:
+    for schema_path in NON_PROD_SCHEMAS:
+        catalog, schema = schema_path.split(".", 1)
+        try:
+            tables = list(ws.tables.list(catalog_name=catalog, schema_name=schema))
+        except Exception as exc:
+            print(f"WARNING: could not list tables in {{schema_path}}: {{exc}}")
+            continue
+        for table in tables:
+            if any(table.name.startswith(p) for p in SCRATCH_TABLE_PREFIXES):
+                full_name = f"{{schema_path}}.{{table.name}}"
+                try:
+                    ws.tables.delete(full_name=full_name)
+                    print(f"deleted table: {{full_name}}")
+                except Exception as exc:
+                    print(f"WARNING: could not delete table {{full_name}}: {{exc}}")
+
+
+def main() -> None:
+    ws = WorkspaceClient(host=os.environ["DATABRICKS_HOST"], token=os.environ["DATABRICKS_TOKEN"])
+    cleanup_endpoints(ws)
+    cleanup_tables(ws)
+
+
+if __name__ == "__main__":
+    main()
+'''
 
     @staticmethod
     def _check_scope_script(project_name: str) -> str:
@@ -342,6 +522,28 @@ if __name__ == "__main__":
 
     # ── Step 2: GitHub ────────────────────────────────────────────────────────
 
+    _GITHUB_URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+    def _is_repo_empty(self, repo: Any) -> tuple[bool, str]:
+        """Empty modulo self._cfg.empty_repo_ignore_patterns (owner request
+        2026-07-13: "some companies use automation to put in specific
+        files/patterns" — a repo stamped with a README/.gitignore/.github by
+        org automation at creation time still counts as empty). Returns
+        (is_empty, detail) — detail explains what blocked it, if anything."""
+        from github import GithubException
+
+        try:
+            contents = repo.get_contents("")
+        except GithubException as exc:
+            if exc.status == 404:
+                return True, "no commits"
+            raise
+        entries = contents if isinstance(contents, list) else [contents]
+        blocking = [e.name for e in entries if e.name not in self._cfg.empty_repo_ignore_patterns]
+        if blocking:
+            return False, f"non-empty: {', '.join(blocking)}"
+        return True, f"empty modulo ignored: {', '.join(e.name for e in entries)}" if entries else "no commits"
+
     def _create_github_repo(
         self,
         project_name: str,
@@ -354,27 +556,52 @@ if __name__ == "__main__":
             from github import Github, GithubException
 
             gh = Github(self._cfg.github_token)
-            # GITHUB_ORG is optional — GitHub's API has no "organization" for a
-            # personal account, so an unset org creates the repo under the
-            # authenticated user instead (both expose the same create_repo/
-            # get_repo interface).
-            owner = gh.get_organization(self._cfg.github_org) if self._cfg.github_org else gh.get_user()
 
-            description = interview_responses.get("problem_statement", "")[:250]
+            existing_repo_url = str(interview_responses.get("existing_repo_url") or "").strip()
             repo_name = project_name.replace("_", "-")
 
-            try:
-                repo = owner.create_repo(
-                    name=repo_name,
-                    description=description,
-                    private=True,
-                    auto_init=False,
-                )
-            except GithubException as exc:
-                if exc.status == 422:  # already exists
-                    repo = owner.get_repo(repo_name)
-                else:
-                    raise
+            if existing_repo_url:
+                match = self._GITHUB_URL_RE.match(existing_repo_url)
+                if not match:
+                    result.add_step(
+                        "github_repo",
+                        "failed",
+                        "existing_repo_url isn't a recognized https://github.com/<owner>/<repo> URL: "
+                        f"{existing_repo_url}",
+                    )
+                    return
+                owner_name, existing_repo_name = match.group(1), match.group(2)
+                repo = gh.get_repo(f"{owner_name}/{existing_repo_name}")
+                is_empty, detail = self._is_repo_empty(repo)
+                if not is_empty:
+                    result.add_step(
+                        "github_repo",
+                        "failed",
+                        f"{existing_repo_url} is not empty ({detail}) — link an empty repo, or leave "
+                        "the field blank to create a new one.",
+                    )
+                    return
+                repo_name = existing_repo_name
+            else:
+                # GITHUB_ORG is optional — GitHub's API has no "organization" for
+                # a personal account, so an unset org creates the repo under the
+                # authenticated user instead (both expose the same
+                # create_repo/get_repo interface).
+                owner = gh.get_organization(self._cfg.github_org) if self._cfg.github_org else gh.get_user()
+                description = interview_responses.get("problem_statement", "")[:250]
+
+                try:
+                    repo = owner.create_repo(
+                        name=repo_name,
+                        description=description,
+                        private=True,
+                        auto_init=False,
+                    )
+                except GithubException as exc:
+                    if exc.status == 422:  # already exists
+                        repo = owner.get_repo(repo_name)
+                    else:
+                        raise
 
             clone_url = repo.clone_url  # https://github.com/org/repo.git
             # Embed token so the push doesn't require interactive auth
@@ -418,6 +645,16 @@ if __name__ == "__main__":
     # ── Step 3: UC schemas ────────────────────────────────────────────────────
 
     def _create_uc_schemas(self, project_name: str, result: GenerationResult) -> None:
+        """dev/staging resolve into the configured non-prod catalog (owner
+        request 2026-07-13: "development will be done in a non-prod
+        workspace... schema defined in the App config") via
+        projects_catalog_for(); prod stays in the prod catalog. The `_dev`/
+        `_staging`/`_prod` schema-name suffix is kept even though the
+        catalogs now usually differ — dropping it would collide if an org
+        hasn't configured a separate non-prod catalog (all three envs then
+        share cfg.catalog, and identical schema names across envs would
+        clash). Suffixed names stay valid and backward-compatible either way.
+        """
         try:
             from databricks.sdk import WorkspaceClient
 
@@ -427,9 +664,9 @@ if __name__ == "__main__":
             )
 
             schemas = {
-                "dev": f"{self._cfg.catalog}.{project_name}_dev",
-                "staging": f"{self._cfg.catalog}.{project_name}_staging",
-                "prod": f"{self._cfg.catalog}.{project_name}_prod",
+                "dev": f"{self._cfg.projects_catalog_for('dev')}.{project_name}_dev",
+                "staging": f"{self._cfg.projects_catalog_for('staging')}.{project_name}_staging",
+                "prod": f"{self._cfg.projects_catalog_for('prod')}.{project_name}_prod",
             }
 
             for env, full_path in schemas.items():
@@ -448,6 +685,57 @@ if __name__ == "__main__":
 
         except Exception as exc:
             result.add_step("uc_schemas", "failed", str(exc))
+
+    # ── Step 3b: UC Volumes (owner request 2026-07-13) ────────────────────────
+
+    VOLUME_NAME = "artifacts"
+
+    def _create_uc_volumes(self, result: GenerationResult) -> None:
+        """One managed Volume per non-prod schema — holds data snapshots,
+        profile reports, and EDA notebook checkpoints. dev/staging only:
+        prod is the served/deployed environment, not a DS experimentation
+        space, so it has no artifacts volume. Requires uc_schema_dev/
+        uc_schema_staging already set on `result` (runs after
+        _create_uc_schemas)."""
+        if not result.uc_schema_dev and not result.uc_schema_staging:
+            result.add_step("uc_volumes", "skipped", "no non-prod schema to attach a volume to")
+            return
+        try:
+            from databricks.sdk import WorkspaceClient
+            from databricks.sdk.service.catalog import VolumeType
+
+            ws = WorkspaceClient(
+                host=self._cfg.databricks_host,
+                token=self._cfg.databricks_token,
+            )
+
+            created: list[str] = []
+            for schema_attr, volume_attr in (
+                ("uc_schema_dev", "uc_volume_dev"),
+                ("uc_schema_staging", "uc_volume_staging"),
+            ):
+                schema_path = getattr(result, schema_attr)
+                if not schema_path:
+                    continue
+                catalog, schema = schema_path.split(".", 1)
+                try:
+                    ws.volumes.create(
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        name=self.VOLUME_NAME,
+                        volume_type=VolumeType.MANAGED,
+                    )
+                except Exception as exc:
+                    if "already exists" not in str(exc).lower():
+                        raise
+                volume_path = f"{schema_path}.{self.VOLUME_NAME}"
+                setattr(result, volume_attr, volume_path)
+                created.append(volume_path)
+
+            result.add_step("uc_volumes", "ok", ", ".join(created))
+
+        except Exception as exc:
+            result.add_step("uc_volumes", "failed", str(exc))
 
     # ── Step 4: MLflow experiment ─────────────────────────────────────────────
 

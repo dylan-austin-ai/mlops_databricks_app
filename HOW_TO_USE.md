@@ -87,7 +87,41 @@ GITHUB_ORG=my-org
 
 # (Optional) LLM endpoint for AI-powered suggestions
 DATABRICKS_LLM_ENDPOINT=databricks-meta-llama-3-1-70b-instruct
+
+# (Optional) Notification delivery — budget alerts, performance-degradation
+# alerts, new-approval-gate notices, and HITL SLA escalations all route
+# through these. Leave a channel unset and it reports "not_configured"
+# rather than failing — nothing crashes, it just doesn't send.
+MLOPS_SMTP_HOST=smtp.yourcompany.com
+MLOPS_SMTP_PORT=587
+MLOPS_SMTP_USER=alerts@yourcompany.com
+MLOPS_SMTP_PASSWORD=your-smtp-password
+MLOPS_SMTP_FROM_EMAIL=alerts@yourcompany.com
+MLOPS_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+MLOPS_TEAMS_WEBHOOK_URL=https://yourorg.webhook.office.com/...
+
+# (Optional) Budget Policy attribution — lets the app create/manage
+# Databricks Budget Policies so serverless usage (jobs, serving endpoints)
+# is attributed per project. These are ACCOUNT-level credentials, NOT the
+# workspace token above — a materially higher-privilege credential (an
+# account-level OAuth service principal, not a workspace PAT). Leave unset
+# to disable this feature entirely; the app degrades gracefully.
+DATABRICKS_ACCOUNT_HOST=https://accounts.azuredatabricks.net
+DATABRICKS_ACCOUNT_ID=
+DATABRICKS_ACCOUNT_CLIENT_ID=
+DATABRICKS_ACCOUNT_CLIENT_SECRET=
+MLOPS_DEFAULT_BUDGET_POLICY_ID=
+MLOPS_DEFAULT_BUDGET_POLICY_NAME=mlops-control-plane-default
 ```
+
+**A note on the account-level credentials specifically:** everything else
+in this file authenticates against your *workspace* (one Databricks
+deployment). The four `DATABRICKS_ACCOUNT_*` variables above authenticate
+against your Databricks *account* (which can span multiple workspaces) —
+whoever holds this service principal's secret has meaningfully broader
+reach than the workspace token. Treat it accordingly: a dedicated service
+principal scoped to budget-policy management only, not a shared admin
+identity.
 
 **Finding your Databricks credentials:**
 - **Host:** Top-right corner of Databricks UI → workspace name → copy workspace URL
@@ -214,6 +248,17 @@ You'll see a **7-step interview wizard**:
 | **Retraining Frequency** | `Monthly` | How often to retrain (Hourly/Daily/Weekly/Monthly/Quarterly/Manual) |
 | **Max Model Age** | `60 days` | If model is older than this, alert |
 
+**Accelerants (optional, purely additive)** — your own `train.py` logic
+stays authoritative either way:
+- **AutoML baseline** — generates `automl_baseline.py`, a disposable first
+  model via `databricks.automl.classify()`/`.regress()` (picked
+  automatically based on your Step 6 performance metrics). Keep it as a
+  score to beat, or delete the file.
+- **Hyperparameter search scaffold** — generates `hyperparameter_search.py`
+  with a real Optuna trial loop and MLflow logging; the search space and
+  your model's training/scoring are left as TODOs since those are specific
+  to what you're building.
+
 **Click "Next" to continue.**
 
 ### Step 3.4: Complete Step 3 — Data Specs
@@ -229,6 +274,20 @@ You'll see a **7-step interview wizard**:
 | **Data Classification** | `Sensitive` | Public, Internal, Sensitive, Restricted |
 | **Train/Validation/Test Split** | `60/20/20` | Percentage split for each set |
 | **Min Data Freshness** | `1 day` | How fresh data must be for training |
+
+**📊 Profile Data** — after entering a dataset, this samples it and runs a
+full profiling report (row/column counts, missing %, duplicate %, plus a
+downloadable HTML report with distributions and correlations). Also feeds a
+default suggestion into Step 4's Data Quality Gates — a column that's
+already frequently null in the real sampled data defaults to "Acceptable"
+instead of "Required," so you're not hand-tuning defaults for columns whose
+real behavior you can already see.
+
+**Feature Catalog matches** — if a feature column you typed matches an
+existing shared feature, it's surfaced here with its owner and reuse count.
+Reusing it is the default; keeping a separate ad-hoc definition instead
+requires a one-line justification, same pattern as the PII justification
+block below it.
 
 **Click "Next" to continue.**
 
@@ -282,6 +341,27 @@ Set up alerts for model health.
 | **Alert Destination** | `Slack` | Where to send alerts (Slack, Email, Both) |
 | **Slack Channel** | `#ml-alerts` | Which channel to notify |
 | **Alert Recipients (Email)** | `your-email@company.com, team@company.com` | Email list for notifications |
+| **Enable budget alerts** | `Yes` | Optional — get notified when this project's spend crosses a threshold |
+| **Budget period** | `Monthly` | Monthly, quarterly, or annual |
+| **Budget threshold (USD)** | `500` | Spend ceiling for the period |
+| **Alert at (% of threshold)** | `80` | Notify once spend reaches this percentage |
+| **Budget policy ID** | *(leave blank)* | Optional — attributes this project's serverless usage to a specific Databricks Budget Policy for billing |
+
+Budget alerts reuse the email addresses you configured above as the alert
+destination — add an email destination first if you want to receive them.
+Alerts and budget breaches are actually delivered (email/Slack/Teams) only
+if the corresponding `MLOPS_SMTP_*`/`MLOPS_SLACK_WEBHOOK_URL`/
+`MLOPS_TEAMS_WEBHOOK_URL` variables are set in `.env` (Step 1.4) — otherwise
+the breach is still recorded, just not sent anywhere.
+
+**Budget policy ID is a different thing from budget alerts above** — budget
+alerts are the app notifying *you*; the budget policy ID is Databricks'
+*own* native billing attribution mechanism (serverless compute only —
+jobs and serving endpoints, which is everything this app generates).
+Leave it blank and the app automatically creates (or reuses) a policy for
+this project — that only actually happens if the account-level credentials
+in `.env` (Step 1.4) are configured; otherwise this is silently skipped and
+the project just has no policy attribution, with no error shown.
 
 **Click "Next" to continue.**
 
@@ -298,6 +378,7 @@ Define who needs to approve deployments.
 | **Require Fairness Sign-Off** | `Yes` | Legal/compliance review required |
 | **Require Governance Review** | `Yes` | Security/audit review required |
 | **Auto-Approve After X Days** | `14` | If not rejected in 14 days, auto-approve (optional) |
+| **Legal / Business / Security / Compliance / Internal Audit contact email** | `legal@company.com` | Optional per-gate contact — if set, that person is notified automatically when the corresponding gate opens (see Approvals page, §4.6) |
 
 **Click "Review & Create" to finish.**
 
@@ -315,6 +396,27 @@ You'll see a summary of all your answers. Review for accuracy.
    - MLflow experiment: /Users/your-email/credit_risk_v1
    - Deployment workflow saved
 ```
+
+The generated repo's `src/` folder has:
+- **`train.py`** — the job entry point the training/retraining workflow
+  actually runs. If any Step 3 feature columns resolved to a shared Feature
+  Catalog entry, this includes real `FeatureLookup`/`create_training_set`
+  code (grouped by source table) — only the join key is left as a TODO,
+  since the app tracks what a feature *is*, not what column joins it to
+  your specific training data.
+- **`eda.py`** — a Databricks-notebook-shaped starting point for
+  exploration and feature selection, pre-wired to this project's dev
+  catalog/schema and the same MLflow experiment `train.py` logs to.
+- **`evaluate.py`** — real, runnable performance-metric and fairness-check
+  code matching exactly what Steps 4/6 declared (not a generic metrics
+  dump), plus training-time SHAP/LIME. The fairness gate fails closed —
+  it raises if measured disparity exceeds your configured threshold, it
+  doesn't just log a warning. Only the model/holdout-data loading is a stub.
+- **`automl_baseline.py`** / **`hyperparameter_search.py`** — only if you
+  opted into those accelerants in Step 2.
+
+See §7.6 for org toolkit auto-import into `train.py`/`eda.py`/the
+accelerant files, and §7.7 for auto-profiling and Feature Catalog reuse.
 
 ---
 
@@ -367,6 +469,12 @@ Once your project is created, you can interact with it across multiple pages.
 - Set data quality thresholds (null %, outliers %, column stats)
 - Monitor compliance: which data loads meet the contract
 - Auto-reject data that violates the contract
+- **Run a quality assessment** — click "▶ Run quality assessment" on any
+  contract to actually execute the null/uniqueness checks its columns
+  declare against the real Unity Catalog table (not just view the declared
+  rules). Records a scored result (excellent/good/acceptable/poor/critical)
+  with which checks failed and which columns carry PII, shown inline on the
+  contract going forward.
 
 **Example:**
 ```
@@ -423,6 +531,11 @@ Feature: customer_credit_score
 6. Model improves, then moves to production
 ```
 
+**SLA escalation:** a pending review that sits past its configured SLA
+window is marked escalated (never auto-approved) and notifies the
+project's configured alert destinations (Step 3.7) — so a stuck review
+gets surfaced, not silently missed.
+
 ### 4.6: Approvals Page
 
 **Path:** `03_approvals.py`
@@ -449,6 +562,12 @@ Feature: customer_credit_score
 - Staging → Prod: 1 ML Engineer + 1 Business Stakeholder
 - Fairness Review: Legal/Compliance (if regulated)
 - Governance Review: Security/Audit
+
+**Approver notification:** when a new gate opens, its configured contact
+email (Step 3.8's per-gate contact fields) is notified automatically, if
+one was set and a notification channel is configured (Step 1.4). Gates
+with no natural human contact (code review, end-to-end test — CI-driven
+checks) aren't notified.
 
 ### 4.7: Monitoring & Alerts Page
 
@@ -486,7 +605,9 @@ Feature: customer_credit_score
 
 **What you see:**
 - Total model count, by status (dev/staging/prod)
-- Total compute spend (by team, by model, over time)
+- Total compute spend — toggle grouping between **project**, **team**, or
+  **deployment type** (batch/real-time/streaming) via the radio above the
+  cost table
 - Highest-risk models (fairness violations, performance drift)
 - Most expensive models
 - Models due for retraining
@@ -853,6 +974,14 @@ Features to use:
 └── customer_payment_history (from churn_prediction project)
 ```
 
+**What's real vs. bookkeeping:** the catalog above (owner, version, used-by
+count) is tracked metadata. What generates real code is Step 3's Feature
+Catalog coercion — when a feature column you type matches a shared entry,
+choosing to reuse it means `train.py` gets an actual
+`databricks.feature_engineering.FeatureLookup`/`create_training_set` call
+for that feature table, not just a note that it exists. Multiple reused
+features from the same table are grouped into one lookup.
+
 ### 7.3: Fairness & Bias Testing
 
 Automatically detect and prevent unfair model behavior.
@@ -888,6 +1017,17 @@ Fairness Test Results: credit_risk_v1 v2.5
 │   └─ Gap: ±2% (threshold: 5%) ✓ PASS
 └── Overall Verdict: ✓ No significant fairness violations detected
 ```
+
+**What actually runs this:** the generated `evaluate.py` — real
+`fairlearn.metrics.demographic_parity_difference`/
+`equalized_odds_difference` calls (when `fairlearn` is your selected
+framework) against exactly the protected attributes/proxy variables you
+declared in Step 4. The gate fails closed: exceeding your configured
+disparity threshold raises `FairnessGateFailure`, not just a logged
+warning. (`aif360` needs privileged/unprivileged group *values* per
+attribute that this app can't infer, so choosing it generates a scaffold
+with that TODO rather than a guess.) `evaluate.py` also logs training-time
+SHAP/LIME as an MLflow artifact.
 
 ### 7.4: Automatic Retraining & Rollback
 
@@ -959,6 +1099,88 @@ FROM mlops.audit_logs
 WHERE user_email = 'alice@company.com' 
 ORDER BY timestamp DESC;
 ```
+
+---
+
+### 7.6: Org Toolkit Auto-Import
+
+Every generated project gets a `src/eda.py` (exploration/feature-selection
+notebook) and `src/train.py` (the job that actually runs). By default
+neither imports anything beyond the standard library and MLflow — this app
+ships with **zero toolkits configured**, since there's no universal "the"
+MLOps or Data Science toolkit every org would want. You configure your own.
+
+**To add one:** create a YAML file in `toolkits/` (repo root, sibling to
+`policy_packs/`) — same convention: PR-reviewed, GitHub is the source of
+truth, not a wizard field or `.env` value. A starting template ships at
+`toolkits/org_toolkits.yaml.example` — copy it, drop the `.example` suffix,
+and edit:
+
+```yaml
+toolkits:
+  - toolkit_id: mlops_toolkit
+    name: "Acme MLOps Toolkit"
+    pip_spec: "acme-mlops-toolkit>=2.0"
+    import_statement: "import acme_mlops_toolkit as mlops"
+
+  - toolkit_id: ds_toolkit
+    name: "Acme Data Science Toolkit"
+    pip_spec: "git+https://github.com/acme-corp/ds-toolkit.git@main"
+    import_statement: "from acme_ds_toolkit import eda, features as ds_features"
+```
+
+**What happens with this configured:**
+- Every new project's `requirements.txt` gets both `pip_spec` lines (no
+  `requirements.txt` is generated at all if zero toolkits are configured —
+  nothing to put in it)
+- `train.py` and `eda.py` both get the `import_statement` lines injected at
+  the top
+- `batch_score.py`/`stream_score.py` (inference-time scripts) are **not**
+  touched — this is scoped to EDA/feature-selection/training code
+
+Multiple toolkits are fine — order in the YAML is preserved in generated
+files. `toolkit_id` must be unique across every `toolkits/*.yaml` file (one
+big flat namespace, same as policy pack IDs).
+
+**Validation is intentionally light:** `pip_spec` and `import_statement`
+are just required to be non-empty strings — there's no check that the pip
+spec actually installs or the import statement is valid Python. A mistake
+here surfaces at `pip install` or import time inside a generated project,
+not at config-load time.
+
+---
+
+### 7.7: Data Profiling
+
+Step 3's **📊 Profile Data** button (next to "⟳ Infer Schema") samples the
+first training dataset and produces two things:
+
+1. **A compact summary shown inline**: rows sampled, column count, missing
+   cells %, duplicate rows %.
+2. **A full HTML profiling report**, offered as a download — distributions,
+   correlations, cardinality, the kind of output pandas-profiling is known
+   for. That library has actually been renamed twice since — it's currently
+   `fg-data-profiling` (was `ydata-profiling`, was `pandas-profiling`) —
+   confirmed against the live PyPI listing when this was built, not assumed
+   from an older name.
+
+Profiling always runs against a **capped sample** (5,000 rows by default),
+never the full table — this is exploration tooling, not a production
+quality check (that's the Data Contracts page's "Run quality assessment,"
+§7.1, which runs against the real table).
+
+**The per-column stats feed Step 4 automatically**: a column that's already
+frequently null in the sampled data (>5%) defaults into the Data Quality
+Gates' "Acceptable Issues" box instead of "Required" — you're not
+hand-tuning a default for a column whose real behavior you can already see.
+This only happens if you clicked "📊 Profile Data" before reaching Step 4;
+skipping it leaves every column defaulting to "Required," same as before
+this feature existed.
+
+**Requires `fg-data-profiling` installed** (`pip install -r
+requirements.txt`) — not bundled by default, and not yet `pip-audit`ed as
+of when this was built; do that before relying on it in a regulated
+environment.
 
 ---
 
@@ -1051,6 +1273,52 @@ Monitoring page is empty or shows "No data available."
 4. Check serving endpoint status:
    - Databricks UI → Model Serving → Your endpoint
    - Should show "Ready" with 0 errors
+
+### Issue: Alerts/budget breaches/approver notifications aren't arriving
+
+**Symptoms:**
+Budget alerts, performance alerts, new-gate notifications, or HITL SLA
+escalations show up in the app (dashboard, audit log) but no email/Slack/
+Teams message ever arrives.
+
+**Solutions:**
+1. Check `.env` has the relevant channel configured (Step 1.4):
+   `MLOPS_SMTP_HOST`/`MLOPS_SMTP_FROM_EMAIL` for email,
+   `MLOPS_SLACK_WEBHOOK_URL` for Slack, `MLOPS_TEAMS_WEBHOOK_URL` for Teams.
+   An unset channel silently reports `not_configured` — this is intentional
+   (never crashes on a missing secret), but it does mean nothing was sent.
+2. For email specifically, confirm at least one recipient address is
+   actually configured on the project (Step 3.7's alert destinations —
+   budget alerts and performance alerts reuse this list).
+3. For approver notifications, confirm the gate type has a contact email
+   set in Step 3.8 — gates with no contact configured (or no natural human
+   contact, like code review) are skipped by design.
+4. Notification failures never block the underlying action (a budget
+   breach is still recorded, a gate still opens, an SLA escalation still
+   happens) — so "nothing arrived" doesn't mean anything else broke.
+
+### Issue: New projects have no Budget Policy attributed
+
+**Symptoms:**
+`projects.budget_policy_id` is empty for a newly created project, and the
+generated `jobs.yml`/`model_serving.yml` have no `budget_policy_id` field.
+
+**Solutions:**
+1. Confirm all four account-level variables are set in `.env` (Step 1.4):
+   `DATABRICKS_ACCOUNT_HOST`, `DATABRICKS_ACCOUNT_ID`,
+   `DATABRICKS_ACCOUNT_CLIENT_ID`, `DATABRICKS_ACCOUNT_CLIENT_SECRET`. All
+   four are required — this is a different credential than the workspace
+   `DATABRICKS_TOKEN`. Missing any one of them disables the feature
+   entirely, silently (no error in the UI) — check the project-creation
+   step log ("Infrastructure steps") for a `budget_policy` line reading
+   `skipped`.
+2. Confirm the service principal behind those credentials actually has
+   permission to create/list Budget Policies at the account level — a
+   permissions error also shows as `skipped` there, with the underlying
+   error in the detail text.
+3. This never blocks project creation either way — a skipped budget policy
+   step just means that project's serverless usage won't be attributed to
+   a policy, not that anything else failed.
 
 ### Issue: Approvals are stuck in "Pending"
 

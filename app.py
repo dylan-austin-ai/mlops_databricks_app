@@ -86,7 +86,7 @@ def _home() -> None:
 
     except Exception as exc:
         st.error(f"Could not load projects: {exc}")
-        st.caption("Run `python -m db.setup` to initialise the schema.")
+        st.caption("Run `python -m db.setup` to initialize the schema.")
 
 
 _home()

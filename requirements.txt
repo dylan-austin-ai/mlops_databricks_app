@@ -17,3 +17,13 @@ pydantic>=2.0.0
 pyyaml>=6.0.0
 python-dotenv>=1.0.0
 PyGithub>=2.3.0
+# Step 3 "Profile Data" (owner request 2026-07-13). Renamed twice —
+# pandas-profiling -> ydata-profiling (2023) -> fg-data-profiling (2026-04,
+# confirmed against current PyPI). Installed and pip-audited clean
+# (2026-07-13).
+fg-data-profiling>=4.18.4
+# fg-data-profiling imports pkg_resources directly but doesn't declare
+# setuptools as a dependency. setuptools>=81 dropped the pkg_resources
+# shim, which breaks full_profile() at runtime (ModuleNotFoundError).
+# Pin until fg-data-profiling migrates off pkg_resources.
+setuptools<81

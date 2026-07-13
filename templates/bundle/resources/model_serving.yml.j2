@@ -5,6 +5,11 @@ resources:
       # Governance-by-default (§9.1): route optimization can only be enabled at
       # endpoint creation — never retrofittable — so it must be right on first deploy.
       route_optimized: {{ 'true' if route_optimized else 'false' }}
+{% if budget_policy_id %}
+      # [Public Preview] serverless-only cost attribution — confirmed live
+      # against CLI v{{ cli_version }} bundle schema
+      budget_policy_id: {{ budget_policy_id }}
+{% endif %}
       config:
         served_entities:
           - name: champion

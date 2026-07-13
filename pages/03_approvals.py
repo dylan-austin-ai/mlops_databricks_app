@@ -203,15 +203,19 @@ def _test_request_form(svc: object, projects: list[dict]) -> None:
         if st.button("Create test request", type="primary"):
             proj = next(p for p in projects if p["project_name"] == selected_proj)
             try:
+                from services.approval_service import ApprovalService
+
                 model_id = _ensure_placeholder_model(svc, proj)
-                svc.create_approval_request(
+                ApprovalService(state=svc).request_approval(
                     model_id=model_id,
                     approval_type=gate_type,
                     approval_gate=gate_type,
                     requested_by=requester or "test@platform",
                     required_count=int(required_count),
                 )
-                st.success("Test approval request created.", icon="✅")
+                st.success(
+                    "Test approval request created — approver notified if a contact email is on file.", icon="✅"
+                )
                 st.rerun()
             except Exception as exc:
                 st.error(f"Failed: {exc}", icon="❌")

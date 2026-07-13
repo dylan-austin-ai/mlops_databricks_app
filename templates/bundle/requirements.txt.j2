@@ -1,0 +1,10 @@
+{% if toolkit_pip_specs %}
+# Org toolkits — configured in toolkits/*.yaml, not this file.
+{% for spec in toolkit_pip_specs %}
+{{ spec }}
+{% endfor %}
+{% endif %}
+{% if use_hyperparameter_search %}
+# hyperparameter_search.py accelerant
+optuna>=3.6.0
+{% endif %}

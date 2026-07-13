@@ -57,6 +57,43 @@ def _overview_tab(project: dict, config: dict | None) -> None:
             mlflow_url = f"{cfg.databricks_host}/#mlflow/experiments/{project['mlflow_experiment_id']}"
             st.link_button("MLflow Experiment ↗", mlflow_url, use_container_width=True)
 
+        if project.get("github_repo_url") and project.get("uc_schema_dev"):
+            if st.button(
+                "📸 Snapshot EDA notebook to Volume",
+                use_container_width=True,
+                help=(
+                    "Owner request 2026-07-13: EDA has no natural 'done' signal (it happens in a Databricks "
+                    "notebook over days/weeks), so this is a manual checkpoint you trigger whenever you want "
+                    "one — reads the current src/eda.py from GitHub and writes a timestamped copy to the "
+                    "project's Volume."
+                ),
+            ):
+                with st.spinner("Snapshotting..."):
+                    try:
+                        import re as _re
+
+                        from services.state_service import StateService
+                        from services.volume_artifact_service import VolumeArtifactService
+
+                        match = _re.match(r"^https://github\.com/([^/]+)/([^/]+)/?$", project["github_repo_url"])
+                        if not match:
+                            raise ValueError(f"Unrecognized repo URL: {project['github_repo_url']}")
+                        from github import Github
+
+                        repo = Github(get_config().github_token).get_repo(f"{match.group(1)}/{match.group(2)}")
+                        eda_content = repo.get_contents("src/eda.py").decoded_content.decode()
+
+                        vol_action = StateService(get_config()).get_last_infrastructure_action(
+                            project["project_id"], "uc_volumes"
+                        )
+                        volume_path = vol_action["resource_id"] if vol_action else ""
+                        if not volume_path:
+                            raise ValueError("No Volume provisioned for this project yet.")
+                        saved_path = VolumeArtifactService().save_eda_snapshot(volume_path, eda_content)
+                        st.success(f"Saved to {saved_path}", icon="✅")
+                    except Exception as exc:
+                        st.error(f"Snapshot failed: {exc}", icon="❌")
+
     with col_right:
         st.markdown(
             '<span style="font-size:11px;font-weight:600;text-transform:uppercase;'
@@ -79,6 +116,34 @@ def _overview_tab(project: dict, config: dict | None) -> None:
                 f'<span style="font-size:12px;color:#64748b">{label}</span>{chip}</div>',
                 unsafe_allow_html=True,
             )
+
+        st.markdown("")
+        if st.button(
+            "🧹 Clean up QA resources",
+            use_container_width=True,
+            help=(
+                "Deletes non-essential dev/QA endpoints and scratch tables (zz_/scratch_/tmp_ prefixed) for "
+                "this project — the same reaper deploy_prod.yml runs automatically before every prod deploy."
+            ),
+        ):
+            with st.spinner("Cleaning up..."):
+                try:
+                    from services.qa_cleanup_service import QaCleanupService
+
+                    schema_paths = [
+                        s for s in (project.get("uc_schema_dev", ""), project.get("uc_schema_staging", "")) if s
+                    ]
+                    results = QaCleanupService().cleanup_non_essential(project.get("project_name", ""), schema_paths)
+                    if not results:
+                        st.info("Nothing to clean up.", icon="✓")
+                    else:
+                        for r in results:
+                            icon = "✅" if r["status"] == "deleted" else "⚠️"
+                            st.write(
+                                f"{icon} {r['resource']}" + (f" — {r.get('detail', '')}" if r.get("detail") else "")
+                            )
+                except Exception as exc:
+                    st.error(f"Cleanup failed: {exc}", icon="❌")
 
         if config:
             raw_resp = config.get("interview_responses", "{}")
@@ -106,6 +171,53 @@ def _overview_tab(project: dict, config: dict | None) -> None:
                 meta_rows.append(("Framework(s)", fws_str))
             for k, v in meta_rows:
                 st.markdown(kv_row(k, str(v)), unsafe_allow_html=True)
+
+    _render_activity_log(project.get("project_id", ""))
+
+
+def _render_activity_log(project_id: str) -> None:
+    """Durable record of every provisioning action the app has taken for
+    this project — same data the wizard's own activity log reads, so what
+    you saw mid-wizard is still here after project creation (owner request
+    2026-07-13)."""
+    if not project_id:
+        return
+    try:
+        from services.state_service import StateService
+
+        actions = StateService().list_infrastructure_actions(project_id)
+    except Exception:
+        return
+    if not actions:
+        return
+
+    _STATUS_ICON = {
+        "ok": "✅",
+        "skipped": "⏭️",
+        "preserved": "🔒",
+        "blocked_drift": "🛑",
+        "manual_action_required": "⚠️",
+        "pending_deletion": "🗑️",
+        "resolved": "✔️",
+        "failed": "❌",
+    }
+    st.markdown("---")
+    with st.expander(f"📋 Activity Log ({len(actions)} action{'s' if len(actions) != 1 else ''})"):
+        for a in actions:
+            icon = _STATUS_ICON.get(a["status"], "•")
+            name = a["action_name"]
+            if name.startswith("file_commit:"):
+                label = f"File committed: `{name.split(':', 1)[1]}`"
+            elif name.startswith("file_stale:"):
+                label = f"Stale file: `{name.split(':', 1)[1]}`"
+            else:
+                label = name.replace("_", " ").title()
+            when = str(a.get("created_at", ""))[:19].replace("T", " ")
+            detail = f" — {a['detail']}" if a.get("detail") else ""
+            st.markdown(
+                f"{icon} **{label}**{detail}  \n<span style='color:#64748b'>{when}</span>",
+                unsafe_allow_html=True,
+            )
 
 
 def _config_tab(config: dict | None) -> None:
@@ -765,6 +877,99 @@ def _main() -> None:
         _drift_tab(project, config)
     with tab_explain:
         _explainability_tab(project, config)
+
+    if status != "deleted":
+        _danger_zone(svc, project)
+
+
+def _danger_zone(svc: object, project: dict) -> None:
+    """Owner request 2026-07-13: project deletion requires MLOps approval —
+    reuses the same approvals table/UI every other gate uses. Deleting the
+    GitHub repo is deliberately NOT automated; the app's token can't do it
+    anyway (confirmed live: missing delete_repo scope)."""
+    st.markdown("---")
+    with st.expander("⚠️ Danger Zone"):
+        from services.project_deletion_service import ProjectDeletionError, ProjectDeletionService
+
+        project_id = project["project_id"]
+        deletion_svc = ProjectDeletionService(state=svc)
+
+        try:
+            approval_id = deletion_svc.is_deletion_approved(project_id)
+        except Exception as exc:
+            st.error(f"Could not check deletion approval status: {exc}")
+            return
+
+        if approval_id:
+            st.warning(
+                "Deletion has been approved by MLOps. Executing it soft-deletes the project, deletes its "
+                "Budget Policy and secret scope (if any), but **preserves UC schemas/tables/Volumes/data "
+                "snapshots** — nothing production data-bearing is destroyed.",
+                icon="✅",
+            )
+            confirmed = st.checkbox("I understand this cannot be undone from this screen.", key="del_confirm")
+            if st.button("Execute Deletion", type="primary", disabled=not confirmed):
+                with st.spinner("Deleting..."):
+                    try:
+                        st.session_state["deletion_result_steps"] = None  # cleared below on success
+                        result = deletion_svc.execute_deletion(project_id, project.get("owner_email", ""))
+                        st.session_state["deletion_result_steps"] = result.steps
+                        st.session_state["deletion_result_repo_url"] = result.github_repo_url
+                        st.session_state["deletion_result_repo_files"] = result.github_repo_files
+                    except ProjectDeletionError as exc:
+                        st.error(str(exc), icon="❌")
+
+            # Deliberately no st.rerun() right after execute -- the file
+            # checklist below is the whole point of this action; persisted
+            # in session_state so it survives instead of flashing by.
+            if st.session_state.get("deletion_result_steps"):
+                for s in st.session_state["deletion_result_steps"]:
+                    icon = {"ok": "✅", "skipped": "⏭️", "preserved": "🔒", "manual_action_required": "⚠️"}.get(
+                        s["status"], "❌"
+                    )
+                    st.write(f"{icon} {s['name'].replace('_', ' ').title()} — {s['detail']}")
+
+                repo_url = st.session_state.get("deletion_result_repo_url")
+                if repo_url:
+                    files = st.session_state.get("deletion_result_repo_files") or []
+                    st.error(
+                        f"**Manual action needed** — review and delete or archive the repo yourself: {repo_url}",
+                        icon="🔔",
+                    )
+                    if files:
+                        st.markdown(f"**{len(files)} file(s) currently in the repo, for your review:**")
+                        with st.expander("Show file list", expanded=len(files) <= 20):
+                            for f in files:
+                                st.markdown(f"- `{f}`")
+                    else:
+                        st.caption("Couldn't fetch the file list automatically — check the repo directly.")
+
+                if st.button("Done — clear this checklist"):
+                    for k in ("deletion_result_steps", "deletion_result_repo_url", "deletion_result_repo_files"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+        else:
+            pending = [
+                a
+                for a in svc._exec(
+                    f"SELECT a.status FROM {svc._tbl('approvals')} a JOIN {svc._tbl('models')} m "
+                    "ON a.model_id = m.model_id WHERE m.project_id = :pid AND a.approval_gate = 'project_deletion' "
+                    "ORDER BY a.requested_timestamp DESC LIMIT 1",
+                    params={"pid": project_id},
+                )
+                if a["status"] == "pending"
+            ]
+            if pending:
+                st.info("Deletion requested — awaiting MLOps approval.", icon="⏳")
+            else:
+                reason = st.text_area("Reason for deletion", placeholder="Project superseded by...", key="del_reason")
+                if st.button("Request Deletion (needs MLOps approval)"):
+                    try:
+                        deletion_svc.request_deletion(project_id, project.get("owner_email", ""), reason)
+                        st.success("Deletion requested — an MLOps reviewer will be notified.", icon="✅")
+                        st.rerun()
+                    except ProjectDeletionError as exc:
+                        st.error(str(exc), icon="❌")
 
 
 _main()

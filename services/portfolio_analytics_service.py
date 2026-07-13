@@ -95,7 +95,43 @@ class PortfolioAnalyticsService:
 
     # ── Cost (§14.1/§17.4): per-project totals, control plane separate ──────
 
-    def cost_rollup(self, days_back: int = 30) -> list[dict[str, Any]]:
+    def cost_rollup(self, days_back: int = 30, group_by: str = "project") -> list[dict[str, Any]]:
+        """Sliced by project (default, unchanged shape — `project_id` key),
+        team, or deployment_type (IMG_1412 Cost Tracking gap).
+
+        Environment and per-model slices aren't in this pass: system.billing
+        usage tags resources with project_id only today (§17.3) — adding
+        environment attribution means tagging bundle resources and widening
+        reconcile_costs's MERGE key, not just this query. Per-model would
+        currently just reproduce per-project: reconcile_costs always writes
+        model_id='project_scope' (this app is one model per project), so
+        there's no real per-model cost split to slice yet.
+        """
+        if group_by == "team":
+            return self._state._exec(
+                f"""SELECT p.team_name AS team_name, sum(c.total_cost_usd) AS total_usd
+                    FROM {self._tbl("cost_tracking")} c
+                    JOIN {self._tbl("projects")} p ON p.project_id = c.project_id
+                    WHERE c.date >= date_sub(current_date(), :days_back)
+                    GROUP BY p.team_name
+                    ORDER BY total_usd DESC""",
+                {"days_back": days_back},
+            )
+        if group_by == "deployment_type":
+            return self._state._exec(
+                f"""SELECT coalesce(latest.inference_type, 'unknown') AS deployment_type,
+                           sum(c.total_cost_usd) AS total_usd
+                    FROM {self._tbl("cost_tracking")} c
+                    LEFT JOIN (
+                      SELECT project_id, inference_type,
+                             row_number() OVER (PARTITION BY project_id ORDER BY config_version DESC) AS rn
+                      FROM {self._tbl("project_configurations")}
+                    ) latest ON latest.project_id = c.project_id AND latest.rn = 1
+                    WHERE c.date >= date_sub(current_date(), :days_back)
+                    GROUP BY coalesce(latest.inference_type, 'unknown')
+                    ORDER BY total_usd DESC""",
+                {"days_back": days_back},
+            )
         return self._state._exec(
             f"""SELECT project_id, sum(total_cost_usd) AS total_usd
                 FROM {self._tbl("cost_tracking")}

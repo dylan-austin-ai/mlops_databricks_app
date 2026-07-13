@@ -28,6 +28,11 @@ Step semantics per §15.2:
                            back (compensate) so registry and traffic agree.
   6.5 assemble model card  failure logs a governance-coverage penalty,
                            never blocks promotion (§12.3)
+  6.6 attach monitor       best-effort Lakehouse Monitoring attach on the
+                           endpoint's Inference Table (§9.1/§13) — real-time
+                           projects only (skipped when step 6's endpoint
+                           update was itself skipped, i.e. batch/streaming).
+                           Idempotent; never blocks promotion, same as 6.5.
   7. audit record          always runs
 
 §29.3 refinement implemented in handle_approved_revocation(): revoking the
@@ -48,9 +53,12 @@ from pathlib import Path
 from typing import Any
 
 from services.bundle_service import BundleService, PlanSummary
+from services.monitoring_service import MonitoringService
 from services.policy_pack_service import PolicyPackService
 from services.registry_service import CHALLENGER, CHAMPION, RegistryService
 from services.state_service import StateService
+
+_REGRESSION_METRICS = {"rmse", "mae"}
 
 
 class SagaAborted(RuntimeError):
@@ -82,6 +90,7 @@ class PromoteToProductionSaga:
         registry: RegistryService | None = None,
         canary_check: Callable[[str], bool | None] | None = None,
         policy: PolicyPackService | None = None,
+        monitoring: MonitoringService | None = None,
     ) -> None:
         """canary_check(uc_full_name) returns True (healthy), False (breach),
         or None (no monitoring attached — logged as skipped, not passed).
@@ -93,6 +102,7 @@ class PromoteToProductionSaga:
         self._registry = registry or RegistryService()
         self._canary_check = canary_check
         self._policy = policy or PolicyPackService(state=self._state)
+        self._monitoring = monitoring or MonitoringService()
 
     def run(
         self,
@@ -243,6 +253,26 @@ class PromoteToProductionSaga:
                     f"governance-coverage penalty, promotion unaffected: {exc}",
                 )
 
+            # 6.6 — best-effort Lakehouse Monitoring attach (§9.1/§13): only
+            # meaningful when an endpoint was actually updated (real-time);
+            # never blocks promotion, same posture as 6.5.
+            endpoint_step = next((s for s in result.steps if s.name == "update_serving_endpoint"), None)
+            if endpoint_step is not None and endpoint_step.status == "ok":
+                try:
+                    handle = attach_default_monitor(self._state, self._monitoring, project_id, uc_full_name)
+                    if handle is None:
+                        result.add("attach_monitor", "skipped", "no fairness/metric config to derive a monitor from")
+                    else:
+                        result.add(
+                            "attach_monitor",
+                            "ok",
+                            f"{'already existed' if handle.already_existed else 'created'}: {handle.table_name}",
+                        )
+                except Exception as exc:
+                    result.add("attach_monitor", "failed", f"governance-coverage penalty, promotion unaffected: {exc}")
+            else:
+                result.add("attach_monitor", "skipped", "no serving endpoint — batch/streaming project")
+
         except SagaAborted as exc:
             result.add("saga_outcome", "failed", str(exc))
         finally:
@@ -341,6 +371,59 @@ def make_default_canary_check(
         return not (degraded or worst >= threshold)
 
     return check
+
+
+def attach_default_monitor(
+    state: StateService,
+    monitoring: MonitoringService,
+    project_id: str,
+    uc_full_name: str,
+) -> Any:
+    """Best-effort Lakehouse Monitoring attach for a real-time endpoint's
+    Inference Table (§9.1/§13, saga step 6.6). Only called once step 6 has
+    confirmed a live serving endpoint exists.
+
+    Table/schema follow the schema-per-project convention (owner decision
+    2026-07-07): {catalog_prod}.{project_name}_prod.inference_log_payload,
+    the same catalog/schema the bundle templates deploy the endpoint's
+    ai_gateway.inference_table_config into (§9.1). project_name is the last
+    segment of uc_full_name, same derivation already used for the default
+    serving endpoint name (saga step 6).
+
+    Returns None when there's no project config to derive fairness slicing
+    columns / problem type from yet — never raises; callers treat any
+    exception as a non-blocking governance-coverage penalty (§12.3's posture,
+    reused here for §13).
+    """
+    rows = state._exec(
+        f"""SELECT interview_responses FROM {state._tbl("project_configurations")}
+            WHERE project_id = :project_id
+            ORDER BY config_version DESC LIMIT 1""",
+        {"project_id": project_id},
+    )
+    if not rows:
+        return None
+    try:
+        responses = json.loads(str(rows[0].get("interview_responses") or "{}"))
+    except (TypeError, ValueError):
+        return None
+
+    project_name = uc_full_name.split(".")[-1]
+    catalog_prod = state._cfg.projects_catalog_for("prod")
+    schema_prod = f"{project_name}_prod"
+    inference_table = f"{catalog_prod}.{schema_prod}.inference_log_payload"
+
+    metric_types = responses.get("performance_metric_types") or []
+    problem_type = "regression" if any(m in _REGRESSION_METRICS for m in metric_types) else "classification"
+    slicing_exprs = responses.get("fairness_attributes") or None
+
+    return monitoring.attach_inference_monitor(
+        inference_table=inference_table,
+        output_schema=f"{catalog_prod}.{schema_prod}",
+        prediction_col="prediction",
+        problem_type=problem_type,
+        slicing_exprs=slicing_exprs,
+    )
 
 
 def handle_approved_revocation(

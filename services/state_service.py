@@ -197,6 +197,21 @@ class StateService:
         WHERE project_id = '{project_id}'
         """)
 
+    def update_project_budget_policy(
+        self,
+        project_id: str,
+        budget_policy_id: str,
+        updated_by: str,
+    ) -> None:
+        now = _now()
+        self._exec(f"""
+        UPDATE {self._tbl("projects")}
+        SET budget_policy_id = '{budget_policy_id}',
+            last_updated = '{now}',
+            last_updated_by = '{updated_by}'
+        WHERE project_id = '{project_id}'
+        """)
+
     # ── Project Configurations ────────────────────────────────────────────────
 
     def save_project_config(
@@ -300,6 +315,58 @@ class StateService:
         """)
         return rows[0] if rows else None
 
+    # ── Budget Alerts (§17.3) ────────────────────────────────────────────────
+
+    def save_budget_alert(
+        self,
+        project_id: str,
+        budget_period: str,
+        budget_threshold_usd: float,
+        alert_at_pct: float,
+        enabled: bool,
+        alert_recipients: list[str],
+    ) -> str:
+        """Upsert this project's one active budget config — a current
+        threshold, not a version history, so MERGE on project_id rather than
+        the config_version pattern save_project_config uses."""
+        budget_id = _uuid()
+        self._exec(
+            f"""MERGE INTO {self._tbl("budget_alerts")} t
+                USING (SELECT :project_id AS project_id) s
+                ON t.project_id = s.project_id
+                WHEN MATCHED THEN UPDATE SET
+                  t.budget_period = :budget_period,
+                  t.budget_threshold_usd = :threshold,
+                  t.alert_at_pct = :alert_at_pct,
+                  t.enabled = :enabled,
+                  t.alert_recipients = array({",".join(f"'{r}'" for r in alert_recipients)})
+                WHEN NOT MATCHED THEN INSERT (
+                  budget_id, project_id, budget_period, budget_threshold_usd,
+                  alert_at_pct, enabled, alert_recipients, created_timestamp
+                ) VALUES (
+                  :budget_id, :project_id, :budget_period, :threshold,
+                  :alert_at_pct, :enabled,
+                  array({",".join(f"'{r}'" for r in alert_recipients)}),
+                  current_timestamp()
+                )""",
+            {
+                "budget_id": budget_id,
+                "project_id": project_id,
+                "budget_period": budget_period,
+                "threshold": budget_threshold_usd,
+                "alert_at_pct": alert_at_pct,
+                "enabled": enabled,
+            },
+        )
+        return budget_id
+
+    def get_budget_alert(self, project_id: str) -> dict[str, Any] | None:
+        rows = self._exec(
+            f"""SELECT * FROM {self._tbl("budget_alerts")} WHERE project_id = :project_id""",
+            {"project_id": project_id},
+        )
+        return rows[0] if rows else None
+
     # ── Audit Logging ─────────────────────────────────────────────────────────
 
     def log_audit(
@@ -346,6 +413,121 @@ class StateService:
             """)
         except Exception:
             pass  # audit must never crash the calling operation
+
+    # ── Project Infrastructure Actions (progressive provisioning, owner ────────
+    #    request 2026-07-13) — idempotency ground truth + drift-guard hashes.
+    #    detail/content_hash can carry arbitrary text (GitHub error messages,
+    #    file content hashes) so this uses real bound parameters rather than
+    #    this file's more common f-string-interpolation style.
+
+    def record_infrastructure_action(
+        self,
+        project_id: str,
+        action_name: str,
+        status: str,
+        detail: str = "",
+        resource_id: str = "",
+        content_hash: str | None = None,
+    ) -> None:
+        self._exec(
+            f"""
+            INSERT INTO {self._tbl("project_infrastructure_actions")}
+              (action_id, project_id, action_name, status, detail, resource_id, content_hash, created_at)
+            VALUES
+              (:action_id, :project_id, :action_name, :status, :detail, :resource_id, :content_hash, :created_at)
+            """,
+            params={
+                "action_id": _uuid(),
+                "project_id": project_id,
+                "action_name": action_name,
+                "status": status,
+                "detail": detail,
+                "resource_id": resource_id,
+                "content_hash": content_hash,
+                "created_at": _now(),
+            },
+        )
+
+    def list_infrastructure_actions(self, project_id: str) -> list[dict[str, Any]]:
+        return self._exec(
+            f"""
+            SELECT * FROM {self._tbl("project_infrastructure_actions")}
+            WHERE project_id = :project_id
+            ORDER BY created_at ASC
+            """,
+            params={"project_id": project_id},
+        )
+
+    def get_last_infrastructure_action(self, project_id: str, action_name: str) -> dict[str, Any] | None:
+        """Most recent row for (project_id, action_name) — the idempotency and
+        drift-guard lookup. `action_name` for file commits is `file_commit:<path>`."""
+        rows = self._exec(
+            f"""
+            SELECT * FROM {self._tbl("project_infrastructure_actions")}
+            WHERE project_id = :project_id AND action_name = :action_name
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            params={"project_id": project_id, "action_name": action_name},
+        )
+        return rows[0] if rows else None
+
+    # ── Training Data Snapshots (§ Step 3 data versioning, owner request ───────
+    #    2026-07-13) — DEEP CLONE manifest for later faithful reproduction.
+
+    def record_training_data_snapshot(
+        self,
+        project_id: str,
+        source_table: str,
+        snapshot_table: str,
+        created_by: str,
+        source_delta_version: int | None = None,
+        row_count: int | None = None,
+    ) -> str:
+        snapshot_id = _uuid()
+        self._exec(
+            f"""
+            INSERT INTO {self._tbl("training_data_snapshots")}
+              (snapshot_id, project_id, source_table, snapshot_table,
+               source_delta_version, row_count, created_at, created_by)
+            VALUES
+              (:snapshot_id, :project_id, :source_table, :snapshot_table,
+               :source_delta_version, :row_count, :created_at, :created_by)
+            """,
+            params={
+                "snapshot_id": snapshot_id,
+                "project_id": project_id,
+                "source_table": source_table,
+                "snapshot_table": snapshot_table,
+                "source_delta_version": source_delta_version,
+                "row_count": row_count,
+                "created_at": _now(),
+                "created_by": created_by,
+            },
+        )
+        return snapshot_id
+
+    def list_training_data_snapshots(self, project_id: str) -> list[dict[str, Any]]:
+        return self._exec(
+            f"""
+            SELECT * FROM {self._tbl("training_data_snapshots")}
+            WHERE project_id = :project_id
+            ORDER BY created_at DESC
+            """,
+            params={"project_id": project_id},
+        )
+
+    def latest_training_data_snapshot(self, project_id: str, source_table: str) -> dict[str, Any] | None:
+        rows = self._exec(
+            f"""
+            SELECT * FROM {self._tbl("training_data_snapshots")}
+            WHERE project_id = :project_id AND source_table = :source_table
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            params={"project_id": project_id, "source_table": source_table},
+        )
+        return rows[0] if rows else None
 
     # ── Installation Config ───────────────────────────────────────────────────
 

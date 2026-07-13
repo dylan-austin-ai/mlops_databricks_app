@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from services.explainability_config import (
@@ -102,6 +104,72 @@ class TestSLAEscalation:
         state.rows_for["SELECT prediction_id"] = []
         assert svc.escalate_sla_breaches(sla_minutes=60) == []
         assert len(state.execs) == 1  # only the SELECT
+
+
+class FakeNotifications:
+    def __init__(self):
+        self.sent_all: list[tuple] = []
+
+    def send_all(self, destination_configs, subject, message):
+        self.sent_all.append((destination_configs, subject, message))
+        return None
+
+
+_DEST = {"destination": "slack", "channel_name": "#mlops-alerts"}
+
+
+class TestSLAEscalationNotification:
+    """IMG_1412 gap: escalation only ever wrote a DB row — no backup
+    reviewer/MLOps was ever actually told."""
+
+    def test_escalation_notifies_projects_configured_destinations(self, state):
+        state.rows_for["SELECT prediction_id"] = [
+            {"prediction_id": "p1", "project_id": "proj1"},
+            {"prediction_id": "p2", "project_id": "proj1"},
+        ]
+        state.rows_for["SELECT interview_responses"] = [
+            {"interview_responses": json.dumps({"alert_destination_configs": [_DEST]})}
+        ]
+        notifications = FakeNotifications()
+        svc = HITLReviewService(state=state, notifications=notifications)
+
+        ids = svc.escalate_sla_breaches(sla_minutes=60, project_id="proj1")
+
+        assert ids == ["p1", "p2"]
+        assert len(notifications.sent_all) == 1
+        destinations, subject, message = notifications.sent_all[0]
+        assert destinations == [_DEST]
+        assert "2 prediction" in subject
+        assert "p1" in message and "p2" in message
+        assert "never auto-approved" in message
+
+    def test_no_destinations_configured_skips_notification(self, state):
+        state.rows_for["SELECT prediction_id"] = [{"prediction_id": "p1", "project_id": "proj1"}]
+        state.rows_for["SELECT interview_responses"] = [
+            {"interview_responses": json.dumps({"alert_destination_configs": []})}
+        ]
+        notifications = FakeNotifications()
+        svc = HITLReviewService(state=state, notifications=notifications)
+
+        svc.escalate_sla_breaches(sla_minutes=60, project_id="proj1")
+
+        assert not notifications.sent_all
+
+    def test_notification_failure_never_blocks_escalation(self, state):
+        class ExplodingNotifications:
+            def send_all(self, *a, **k):
+                raise RuntimeError("webhook down")
+
+        state.rows_for["SELECT prediction_id"] = [{"prediction_id": "p1", "project_id": "proj1"}]
+        state.rows_for["SELECT interview_responses"] = [
+            {"interview_responses": json.dumps({"alert_destination_configs": [_DEST]})}
+        ]
+        svc = HITLReviewService(state=state, notifications=ExplodingNotifications())
+
+        ids = svc.escalate_sla_breaches(sla_minutes=60, project_id="proj1")
+
+        assert ids == ["p1"]  # escalation still recorded despite notification blowing up
+        assert state.audits[0]["action_type"] == "hitl_sla_escalated"
 
 
 class TestExplainabilityResolve:

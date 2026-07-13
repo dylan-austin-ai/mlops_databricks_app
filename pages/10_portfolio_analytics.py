@@ -110,10 +110,25 @@ def main() -> None:
         )
 
     st.markdown("---")
-    st.subheader("Cost by project (30d)")
+    st.subheader("Cost (30d)")
+    group_by = st.radio(
+        "Group by",
+        options=["project", "team", "deployment_type"],
+        format_func=lambda k: {"project": "Project", "team": "Team", "deployment_type": "Deployment type"}[k],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if group_by != "project":
+        try:
+            costs = svc.cost_rollup(group_by=group_by)
+        except Exception as exc:
+            st.error(f"Failed to load cost rollup: {exc}")
+            costs = []
+    label_key = {"project": "project_id", "team": "team_name", "deployment_type": "deployment_type"}[group_by]
+    label_col = {"project": "Project", "team": "Team", "deployment_type": "Deployment type"}[group_by]
     if costs:
         st.dataframe(
-            [{"Project": r.get("project_id", "—"), "Total USD": float(r.get("total_usd") or 0)} for r in costs],
+            [{label_col: r.get(label_key, "—"), "Total USD": float(r.get("total_usd") or 0)} for r in costs],
             use_container_width=True,
             hide_index=True,
         )

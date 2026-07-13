@@ -37,6 +37,10 @@ _TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "bundle"
 
 _SUBPROCESS_TIMEOUT_S = 300
 
+# Same convention as saga_engine.py's monitor-attach problem-type inference —
+# one definition of "this looks like regression" reused wherever it matters.
+_REGRESSION_METRICS = {"rmse", "mae"}
+
 
 class BundleServiceError(RuntimeError):
     """Raised when a bundle operation fails or preconditions aren't met."""
@@ -110,17 +114,48 @@ def _shift_unix_dow(dow: str) -> str:
     return re.sub(r"\d+", shift, dow)
 
 
+def _grouped_feature_lookups(feature_catalog_resolutions: dict[str, Any]) -> list[dict[str, Any]]:
+    """Group Step 3's per-column Feature Catalog resolutions by their source
+    feature table — real databricks.feature_engineering.FeatureLookup only
+    needs one entry per table, not one per column (confirmed shape:
+    FeatureLookup(table_name=, feature_names=, lookup_key=), verified live
+    against current docs — owner request 2026-07-13).
+
+    lookup_key is deliberately left as a TODO for the data scientist to fill
+    in: the app tracks what a feature *is*, not what entity key joins a
+    given feature table to this project's training data — that's real
+    domain knowledge this generator doesn't have.
+    """
+    by_table: dict[str, list[str]] = {}
+    for col, res in feature_catalog_resolutions.items():
+        if res.get("resolved") != "shared":
+            continue
+        table = res.get("feature_table_name") or ""
+        if not table:
+            continue
+        by_table.setdefault(table, []).append(res.get("feature_column_name") or col)
+
+    return [
+        {"table_name": table, "feature_names": sorted(cols), "var_name": f"lookup_{i}"}
+        for i, (table, cols) in enumerate(sorted(by_table.items()), start=1)
+    ]
+
+
 class BundleService:
     def __init__(
         self,
         config: AppConfig | None = None,
         cli_path: str | None = None,
         runner: Any = None,
+        toolkits_dir: Path | None = None,
     ) -> None:
         self._cfg = config or get_config()
         self._cli = cli_path or shutil.which("databricks") or str(Path.home() / ".local/bin/databricks")
         # Injectable for tests: callable(list[str], cwd) -> CliResult
         self._runner = runner or self._run_subprocess
+        # Injectable for tests; defaults to the real toolkits/ dir (owner
+        # request 2026-07-13 — org-configured auto-import, mirrors policy_packs)
+        self._toolkits_dir = toolkits_dir
 
     # ── CLI plumbing ──────────────────────────────────────────────────────────
 
@@ -170,8 +205,17 @@ class BundleService:
         owner_email: str,
         interview_responses: dict[str, Any],
         output_dir: Path,
+        budget_policy_id: str = "",
     ) -> Path:
-        """Render the full bundle scaffold into output_dir and return its path."""
+        """Render the full bundle scaffold into output_dir and return its path.
+
+        budget_policy_id is a resolved value, not read from interview_responses
+        here — resolution (wizard override vs. auto-created per-project policy
+        vs. the control-plane default vs. skipped entirely when account
+        credentials aren't configured) is BudgetPolicyService's job, called
+        from the generator before this renders. Empty = the [Public Preview]
+        budget_policy_id field is omitted from generated resources entirely.
+        """
         inference_type = interview_responses.get("inference_type", "batch")
         route_override = interview_responses.get("route_optimization_override_reason", "")
         capture_override = interview_responses.get("inference_capture_override_reason", "")
@@ -182,6 +226,37 @@ class BundleService:
         batch_cron = ""
         if inference_type in ("batch", "both") and interview_responses.get("batch_schedule"):
             batch_cron = unix_cron_to_quartz(interview_responses["batch_schedule"])
+
+        from services.explainability_config import default_method
+        from services.toolkit_config_service import load_toolkits, toolkit_imports, toolkit_pip_specs
+
+        toolkits = load_toolkits(self._toolkits_dir)
+        feature_resolutions = interview_responses.get("feature_catalog_resolutions", {})
+        feature_lookups = _grouped_feature_lookups(feature_resolutions)
+        # A feature column is ad-hoc (read straight from the base table) unless
+        # Step 3 explicitly resolved it to a shared Feature Catalog entry.
+        shared_cols = {col for col, res in feature_resolutions.items() if res.get("resolved") == "shared"}
+        adhoc_features = [c for c in interview_responses.get("feature_columns", []) if c not in shared_cols]
+
+        model_frameworks = interview_responses.get("model_frameworks") or ["sklearn"]
+        model_type = model_frameworks[0]
+        # Proxy variables (§4 Governance) are the only place a *column name*
+        # is tied to a protected class — fairness_attributes are category
+        # labels ("Age", "Race / Ethnicity"), not columns, so this is the
+        # best-effort join between the two, not a guess at column naming.
+        sensitive_columns = {
+            pv["column"]: pv.get("protected_classes", [])
+            for pv in interview_responses.get("proxy_variables", [])
+            if pv.get("column")
+        }
+        performance_metric_types_for_regression_check = interview_responses.get("performance_metric_types") or (
+            [interview_responses["performance_metric_type"]]
+            if interview_responses.get("performance_metric_type")
+            else []
+        )
+        is_regression = any(m in _REGRESSION_METRICS for m in performance_metric_types_for_regression_check)
+        use_automl_baseline = bool(interview_responses.get("use_automl_baseline"))
+        use_hyperparameter_search = bool(interview_responses.get("use_hyperparameter_search"))
 
         context = {
             "project_name": project_name,
@@ -208,6 +283,28 @@ class BundleService:
             # ("Entity version must be a number"), so this stays numeric and
             # promotion updates the endpoint config (saga step 6).
             "champion_version": interview_responses.get("champion_version", "1"),
+            "budget_policy_id": budget_policy_id,
+            "toolkit_imports": toolkit_imports(toolkits),
+            "toolkit_pip_specs": toolkit_pip_specs(toolkits),
+            "target_variable": interview_responses.get("target_variable", ""),
+            "feature_lookups": feature_lookups,
+            "adhoc_features": adhoc_features,
+            "training_datasets": interview_responses.get("training_datasets", []),
+            "model_type": model_type,
+            "performance_metric_types": interview_responses.get("performance_metric_types")
+            or (
+                ["accuracy"]
+                if not interview_responses.get("performance_metric_type")
+                else [interview_responses["performance_metric_type"]]
+            ),
+            "custom_monitoring_metrics": interview_responses.get("custom_monitoring_metrics", ""),
+            "bias_test_types": interview_responses.get("bias_test_types", ["aif360", "fairlearn"]),
+            "fairness_threshold_pct": interview_responses.get("fairness_threshold_pct", 10),
+            "sensitive_columns": sensitive_columns,
+            "explainability_method": default_method(model_type),
+            "is_regression": is_regression,
+            "use_automl_baseline": use_automl_baseline,
+            "use_hyperparameter_search": use_hyperparameter_search,
         }
 
         env = Environment(
@@ -222,6 +319,18 @@ class BundleService:
             ("resources/schemas.yml.j2", bundle_dir / "resources" / "schemas.yml"),
             ("resources/jobs.yml.j2", bundle_dir / "resources" / "jobs.yml"),
             ("src/train.py.j2", bundle_dir / "src" / "train.py"),
+            # EDA/feature-selection happens for every project shape — not
+            # inference-type-specific, so these are always rendered (owner
+            # request 2026-07-13). evaluate.py was referenced by 3 UI/CI
+            # spots (interview_service.py, generator_service.py's change-
+            # scope script, the Step 6 custom-metrics help text) but never
+            # actually generated until now.
+            ("src/eda.py.j2", bundle_dir / "src" / "eda.py"),
+            ("src/evaluate.py.j2", bundle_dir / "src" / "evaluate.py"),
+            # Owner request 2026-07-13: low-friction dev/QA self-deploy vs a
+            # gated prod deploy — see each file's own header comment.
+            (".github/workflows/deploy_dev.yml.j2", bundle_dir / ".github" / "workflows" / "deploy_dev.yml"),
+            (".github/workflows/deploy_prod.yml.j2", bundle_dir / ".github" / "workflows" / "deploy_prod.yml"),
         ]
         if inference_type in ("real_time", "both"):
             rendered.append(("resources/model_serving.yml.j2", bundle_dir / "resources" / "model_serving.yml"))
@@ -229,6 +338,16 @@ class BundleService:
             rendered.append(("src/batch_score.py.j2", bundle_dir / "src" / "batch_score.py"))
         if inference_type == "streaming":
             rendered.append(("src/stream_score.py.j2", bundle_dir / "src" / "stream_score.py"))
+        if use_automl_baseline:
+            rendered.append(("src/automl_baseline.py.j2", bundle_dir / "src" / "automl_baseline.py"))
+        if use_hyperparameter_search:
+            rendered.append(("src/hyperparameter_search.py.j2", bundle_dir / "src" / "hyperparameter_search.py"))
+        if toolkits or use_hyperparameter_search:
+            # Only render a requirements.txt when there's something to put in
+            # it — no invented baseline dependency-pinning for a project with
+            # neither toolkits nor accelerants needing a third-party package
+            # (AutoML ships with Databricks ML Runtime; optuna doesn't).
+            rendered.append(("requirements.txt.j2", bundle_dir / "requirements.txt"))
 
         for template_name, dest in rendered:
             dest.parent.mkdir(parents=True, exist_ok=True)

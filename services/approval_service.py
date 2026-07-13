@@ -21,7 +21,23 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from services.notification_service import NotificationService
 from services.state_service import StateService
+
+# Step 7's per-gate contact email fields (interview_service.Step7ApprovalGates)
+# — the only place this app already collects "who to notify" per gate type.
+# Gates with no mapping (code_review, end_to_end_test) are automated/CI
+# checks, not human-approver-notified.
+_GATE_CONTACT_FIELD = {
+    "legal_review": "legal_contact_email",
+    "fairness_review": "legal_contact_email",
+    "business_approval": "business_contact_email",
+    "security_scan": "security_contact_email",
+    "security_review": "security_contact_email",
+    "compliance_review": "compliance_contact_email",
+    "internal_audit": "internal_audit_contact_email",
+    "internal_audit_sign_off": "internal_audit_contact_email",
+}
 
 
 class ApprovalServiceError(RuntimeError):
@@ -47,11 +63,64 @@ class RevocationOutcome:
 
 
 class ApprovalService:
-    def __init__(self, state: StateService | None = None) -> None:
+    def __init__(self, state: StateService | None = None, notifications: NotificationService | None = None) -> None:
         self._state = state or StateService()
+        self._notifications = notifications or NotificationService()
 
     def _tbl(self, name: str) -> str:
         return self._state._tbl(name)
+
+    # ── gate creation + approver notification (IMG_1412 gap) ────────────────
+
+    def request_approval(
+        self,
+        model_id: str,
+        approval_type: str,
+        approval_gate: str,
+        requested_by: str,
+        required_count: int = 1,
+    ) -> str:
+        """Open a gate and best-effort notify its configured approver (§23/§15
+        — the app never had a real call site for this before; §03_approvals.py's
+        "create test approval request" form was the only caller). Notification
+        failure never blocks gate creation — the gate is real and pending
+        either way; a human just might not have been pinged about it yet."""
+        approval_id = self._state.create_approval_request(
+            model_id, approval_type, approval_gate, requested_by, required_count
+        )
+        try:
+            self._notify_approver(model_id, approval_gate, approval_id)
+        except Exception:
+            pass
+        return approval_id
+
+    def _notify_approver(self, model_id: str, approval_gate: str, approval_id: str) -> None:
+        contact_field = _GATE_CONTACT_FIELD.get(approval_gate)
+        if not contact_field:
+            return
+        rows = self._state._exec(
+            f"""SELECT pc.interview_responses
+                FROM {self._tbl("project_configurations")} pc
+                JOIN {self._tbl("models")} m ON m.project_id = pc.project_id
+                WHERE m.model_id = :model_id
+                ORDER BY pc.config_version DESC LIMIT 1""",
+            {"model_id": model_id},
+        )
+        if not rows:
+            return
+        try:
+            responses = json.loads(str(rows[0].get("interview_responses") or "{}"))
+        except (TypeError, ValueError):
+            return
+        email = responses.get(contact_field)
+        if not email:
+            return
+        gate_label = approval_gate.replace("_", " ").title()
+        self._notifications.send(
+            {"destination": "email", "email_addresses": [email]},
+            f"Approval needed — {gate_label}",
+            f"A new {gate_label} gate (approval_id={approval_id}) is pending your review.",
+        )
 
     # ── §15.1 concurrency-safe decision write ────────────────────────────────
 

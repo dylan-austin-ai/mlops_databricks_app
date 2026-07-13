@@ -1,0 +1,190 @@
+"""Evaluation entry point for {{ project_name }} — generated scaffold.
+
+Computes exactly the performance metrics (Step 6) and fairness checks
+(Step 4) this project declared — not a generic metrics dump. The fairness
+gate fails closed: enforce_fairness_gate() raises when measured disparity
+exceeds fairness_threshold_pct, rather than logging a warning and
+continuing — this is a CI-blocking gate, not an FYI (§4 Governance).
+
+Only the data/model loading in __main__ is a stub — the metric, fairness,
+and explainability computation above it is real, runnable code.
+"""
+
+from __future__ import annotations
+
+import argparse
+{% if toolkit_imports %}
+# Org toolkits — configured in toolkits/*.yaml, not this file.
+{% for stmt in toolkit_imports %}
+{{ stmt }}
+{% endfor %}
+{% endif %}
+
+PERFORMANCE_METRIC_TYPES = {{ performance_metric_types }}
+BIAS_TEST_TYPES = {{ bias_test_types }}
+FAIRNESS_THRESHOLD_PCT = {{ fairness_threshold_pct }}
+# {column_name: [protected_classes_it_proxies_for]} — from Step 4's declared
+# proxy variables, the only place a real column name is tied to a protected
+# class (fairness_attributes are category labels like "Age", not columns).
+# TODO(data-scientist): confirm this is the complete set of columns you want
+# tested — add any directly-protected column Step 4 didn't capture as a proxy.
+SENSITIVE_COLUMNS = {{ sensitive_columns }}
+
+
+class FairnessGateFailure(RuntimeError):
+    """Raised when measured disparity exceeds the configured threshold —
+    fails closed, same posture as every other approval gate in this project."""
+
+
+def compute_performance_metrics(y_true, y_pred, y_proba=None) -> dict[str, float]:
+    """Only computes what Step 6 actually asked to monitor."""
+    from sklearn import metrics as skmetrics
+
+    results: dict[str, float] = {}
+{% for m in performance_metric_types %}
+{% if m == "accuracy" %}
+    results["accuracy"] = float(skmetrics.accuracy_score(y_true, y_pred))
+{% elif m == "auc_roc" %}
+    if y_proba is not None:
+        results["auc_roc"] = float(skmetrics.roc_auc_score(y_true, y_proba))
+{% elif m == "f1_score" %}
+    results["f1_score"] = float(skmetrics.f1_score(y_true, y_pred))
+{% elif m == "precision" %}
+    results["precision"] = float(skmetrics.precision_score(y_true, y_pred))
+{% elif m == "recall" %}
+    results["recall"] = float(skmetrics.recall_score(y_true, y_pred))
+{% elif m == "rmse" %}
+    # mean_squared_error(..., squared=False) was removed in newer sklearn —
+    # this form works across versions.
+    results["rmse"] = float(skmetrics.mean_squared_error(y_true, y_pred) ** 0.5)
+{% elif m == "mae" %}
+    results["mae"] = float(skmetrics.mean_absolute_error(y_true, y_pred))
+{% elif m == "error_rate" %}
+    results["error_rate"] = 1.0 - float(skmetrics.accuracy_score(y_true, y_pred))
+{% elif m == "custom" %}
+    # TODO(data-scientist): custom metric{% if custom_monitoring_metrics %} — {{ custom_monitoring_metrics }}{% endif %}
+    # results["custom"] = ...
+{% endif %}
+{% endfor %}
+    return results
+
+
+def compute_fairness_metrics(y_true, y_pred, sensitive_features: dict) -> dict[str, float]:
+    """sensitive_features: {column_name: array-like column} — pass
+    SENSITIVE_COLUMNS' keys, populated from your holdout set."""
+    results: dict[str, float] = {}
+{% if "fairlearn" in bias_test_types %}
+    from fairlearn.metrics import demographic_parity_difference, equalized_odds_difference
+
+    for attr_name, attr_values in sensitive_features.items():
+        results[f"fairlearn_demographic_parity_diff_{attr_name}"] = float(
+            demographic_parity_difference(y_true, y_pred, sensitive_features=attr_values)
+        )
+        results[f"fairlearn_equalized_odds_diff_{attr_name}"] = float(
+            equalized_odds_difference(y_true, y_pred, sensitive_features=attr_values)
+        )
+{% endif %}
+{% if "aif360" in bias_test_types %}
+    # TODO(data-scientist): aif360's ClassificationMetric needs explicit
+    # privileged/unprivileged group VALUES per attribute (e.g. which
+    # policyholder_age band counts as "privileged") — a policy decision this
+    # app can't infer. fairlearn's difference metrics above cover the same
+    # ground without that requirement; add aif360 here only if your org's
+    # policy pack specifically requires its metric definitions.
+    # from aif360.datasets import BinaryLabelDataset
+    # from aif360.metrics import ClassificationMetric
+{% endif %}
+{% if "custom" in bias_test_types %}
+    # TODO(data-scientist): custom fairness check — implement here.
+{% endif %}
+    return results
+
+
+def enforce_fairness_gate(fairness_results: dict[str, float]) -> None:
+    """Fails closed (§4 Governance): any |disparity| beyond the declared
+    threshold blocks promotion outright, not just a logged warning."""
+    threshold = FAIRNESS_THRESHOLD_PCT / 100.0
+    breaches = {k: v for k, v in fairness_results.items() if abs(v) > threshold}
+    if breaches:
+        raise FairnessGateFailure(
+            f"Fairness gate failed — {len(breaches)} metric(s) exceeded "
+            f"{FAIRNESS_THRESHOLD_PCT}% disparity threshold: {breaches}"
+        )
+
+
+def compute_training_explainability(model, x_holdout, model_type: str = "{{ model_type }}") -> None:
+    """§12.1: training-time (global) explainability on a holdout sample,
+    logged as an MLflow artifact. Method matches
+    explainability_config.default_method() — SHAP with TreeExplainer when a
+    fast path exists, LIME otherwise."""
+    import mlflow
+
+    method = "{{ explainability_method }}"
+    if method == "shap":
+        import shap
+
+        tree_types = {"xgboost", "lightgbm", "random_forest", "randomforest", "decision_tree", "catboost"}
+        explainer = (
+            shap.TreeExplainer(model) if model_type.lower() in tree_types else shap.Explainer(model.predict, x_holdout)
+        )
+        shap_values = explainer(x_holdout)
+
+        import matplotlib.pyplot as plt
+
+        shap.summary_plot(shap_values, x_holdout, show=False)
+        mlflow.log_figure(plt.gcf(), "shap_summary.png")
+        plt.close()
+    else:
+        from lime.lime_tabular import LimeTabularExplainer
+
+        LimeTabularExplainer(x_holdout.values, feature_names=list(x_holdout.columns), mode="classification")
+        # TODO(data-scientist): LIME explains one instance at a time — loop
+        # over a representative holdout sample and log aggregate explanations
+        # for the model card (§12.3).
+
+
+def evaluate(
+    y_true,
+    y_pred,
+    y_proba=None,
+    sensitive_features: dict | None = None,
+    model=None,
+    x_holdout=None,
+) -> dict[str, float]:
+    """Orchestrates metrics + fairness + explainability, logs to MLflow, and
+    enforces the fairness gate last — so results are always logged even when
+    the gate fails and this raises."""
+    import mlflow
+
+    performance = compute_performance_metrics(y_true, y_pred, y_proba)
+    fairness = compute_fairness_metrics(y_true, y_pred, sensitive_features or {})
+
+    if model is not None and x_holdout is not None:
+        compute_training_explainability(model, x_holdout)
+
+    with mlflow.start_run(nested=True):
+        for name, value in {**performance, **fairness}.items():
+            mlflow.log_metric(name, value)
+        mlflow.set_tag("fairness_test_passed", str(not fairness or all(
+            abs(v) <= FAIRNESS_THRESHOLD_PCT / 100.0 for v in fairness.values()
+        )))
+
+    enforce_fairness_gate(fairness)  # raises last — CI/job fails, but results above are already logged
+    return {**performance, **fairness}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalog", required=True)
+    parser.add_argument("--schema", required=True)
+    parser.add_argument("--model-name", required=True)
+    args = parser.parse_args()
+
+    # TODO(data-scientist): load the registered model
+    # ({args.catalog}.{args.schema}.{args.model_name}) and a real holdout
+    # set, produce y_true/y_pred/y_proba, and build sensitive_features as
+    # {col: holdout_df[col] for col in SENSITIVE_COLUMNS}. Then:
+    #   evaluate(y_true, y_pred, y_proba, sensitive_features, model, x_holdout)
+    raise NotImplementedError(
+        "Wire up model + holdout data loading, then call evaluate(...)."
+    )

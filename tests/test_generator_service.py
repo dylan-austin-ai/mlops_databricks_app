@@ -83,6 +83,7 @@ class TestGenerationResult:
         assert r.uc_schema_staging == ""
         assert r.uc_schema_prod == ""
         assert r.secret_scope_name == ""
+        assert r.budget_policy_id == ""
 
     def test_artifact_assignment(self):
         r = GenerationResult(project_name="p")
@@ -174,6 +175,13 @@ class TestScaffoldCode:
         compile(script_text, "check_change_scope.py", "exec")  # generated script is valid Python
         assert "PROJECT_NAME = 'churn_model'" in script_text
 
+        cleanup_script = path / "scripts" / "cleanup_qa_resources.py"
+        assert cleanup_script.is_file() and os.access(cleanup_script, os.X_OK)
+        cleanup_text = cleanup_script.read_text()
+        compile(cleanup_text, "cleanup_qa_resources.py", "exec")
+        assert "PROJECT_NAME = 'churn_model'" in cleanup_text
+        assert 'KEEP_ENDPOINT_NAMES = {f"{PROJECT_NAME}-dev"' in cleanup_text
+
     def test_git_repo_on_main_with_initial_commit(self, cfg):
         path, _ = _scaffold(cfg)
 
@@ -252,6 +260,128 @@ def _cfg_with_github(github_org: str) -> AppConfig:
     )
 
 
+class FakeBudgetPolicyHandle:
+    def __init__(self, policy_id: str, already_existed: bool = False):
+        self.policy_id = policy_id
+        self.already_existed = already_existed
+
+
+class FakeBudgetPolicy:
+    """Test double for BudgetPolicyService — every method is independently
+    swappable to raise, so each resolution branch in
+    ProjectInfrastructureGenerator._resolve_budget_policy can be exercised."""
+
+    def __init__(
+        self,
+        ensure_policy_result=None,
+        ensure_policy_raises=None,
+        ensure_default_result=None,
+        ensure_default_raises=None,
+    ):
+        self._ensure_policy_result = ensure_policy_result
+        self._ensure_policy_raises = ensure_policy_raises
+        self._ensure_default_result = ensure_default_result
+        self._ensure_default_raises = ensure_default_raises
+        self.ensure_policy_calls: list[tuple] = []
+
+    def ensure_policy(self, name, custom_tags):
+        self.ensure_policy_calls.append((name, custom_tags))
+        if self._ensure_policy_raises:
+            raise self._ensure_policy_raises
+        return self._ensure_policy_result
+
+    def ensure_default_policy(self):
+        if self._ensure_default_raises:
+            raise self._ensure_default_raises
+        return self._ensure_default_result
+
+
+class TestResolveBudgetPolicy:
+    """Owner request 2026-07-12 — per-project cost attribution, never blocks
+    project creation regardless of which layer fails."""
+
+    def test_wizard_override_used_directly_no_service_call(self, cfg):
+        gen = ProjectInfrastructureGenerator(cfg, budget_policy_service=FakeBudgetPolicy())
+        result = GenerationResult(project_name="churn")
+
+        policy_id = gen._resolve_budget_policy("churn", "retention_team", {"budget_policy_id": "preset-999"}, result)
+
+        assert policy_id == "preset-999"
+        assert result.budget_policy_id == "preset-999"
+        assert result.steps[0]["status"] == "ok"
+        assert "wizard override" in result.steps[0]["detail"]
+
+    def test_creates_new_per_project_policy(self, cfg):
+        from services.budget_policy_service import BudgetPolicyUnavailable  # noqa: F401 (documents the other branch)
+
+        fake = FakeBudgetPolicy(ensure_policy_result=FakeBudgetPolicyHandle("p-new", already_existed=False))
+        gen = ProjectInfrastructureGenerator(cfg, budget_policy_service=fake)
+        result = GenerationResult(project_name="churn")
+
+        policy_id = gen._resolve_budget_policy("churn", "retention_team", {}, result)
+
+        assert policy_id == "p-new"
+        assert fake.ensure_policy_calls[0][0] == "mlops-churn"
+        assert fake.ensure_policy_calls[0][1] == {
+            "project_id": "churn",
+            "team": "retention_team",
+            "managed_by": "mlops_control_plane",
+        }
+        assert "created" in result.steps[0]["detail"]
+
+    def test_reuses_existing_per_project_policy(self, cfg):
+        fake = FakeBudgetPolicy(ensure_policy_result=FakeBudgetPolicyHandle("p-existing", already_existed=True))
+        gen = ProjectInfrastructureGenerator(cfg, budget_policy_service=fake)
+        result = GenerationResult(project_name="churn")
+
+        policy_id = gen._resolve_budget_policy("churn", "retention_team", {}, result)
+
+        assert policy_id == "p-existing"
+        assert "reused" in result.steps[0]["detail"]
+
+    def test_unavailable_credentials_skips_cleanly(self, cfg):
+        from services.budget_policy_service import BudgetPolicyUnavailable
+
+        fake = FakeBudgetPolicy(ensure_policy_raises=BudgetPolicyUnavailable("account creds not set"))
+        gen = ProjectInfrastructureGenerator(cfg, budget_policy_service=fake)
+        result = GenerationResult(project_name="churn")
+
+        policy_id = gen._resolve_budget_policy("churn", "retention_team", {}, result)
+
+        assert policy_id == ""
+        assert result.budget_policy_id == ""
+        assert result.steps[0]["status"] == "skipped"
+
+    def test_per_project_failure_falls_back_to_default(self, cfg):
+        fake = FakeBudgetPolicy(
+            ensure_policy_raises=RuntimeError("quota exceeded"),
+            ensure_default_result=FakeBudgetPolicyHandle("p-default"),
+        )
+        gen = ProjectInfrastructureGenerator(cfg, budget_policy_service=fake)
+        result = GenerationResult(project_name="churn")
+
+        policy_id = gen._resolve_budget_policy("churn", "retention_team", {}, result)
+
+        assert policy_id == "p-default"
+        assert result.steps[0]["status"] == "ok"
+        assert "fell back to control-plane default" in result.steps[0]["detail"]
+
+    def test_per_project_and_default_both_fail_skips_cleanly(self, cfg):
+        fake = FakeBudgetPolicy(
+            ensure_policy_raises=RuntimeError("quota exceeded"),
+            ensure_default_raises=RuntimeError("default also broken"),
+        )
+        gen = ProjectInfrastructureGenerator(cfg, budget_policy_service=fake)
+        result = GenerationResult(project_name="churn")
+
+        policy_id = gen._resolve_budget_policy("churn", "retention_team", {}, result)
+
+        assert policy_id == ""
+        assert result.steps[0]["status"] == "skipped"
+        assert "quota exceeded" in result.steps[0]["detail"]
+        assert "default also broken" in result.steps[0]["detail"]
+
+
 class TestGithubRepoOwnerResolution:
     """GITHUB_ORG is optional — a personal GitHub account has no organization
     to resolve, so an unset org must create the repo under the authenticated
@@ -283,6 +413,165 @@ class TestGithubRepoOwnerResolution:
         assert client.get_user_called is True
         assert client.org_requested is None
 
+
+class FakeContentEntry:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class FakeExistingRepo:
+    def __init__(self, full_name: str, contents: list[str] | None):
+        """contents=None simulates a truly empty repo (GithubException 404
+        on get_contents); contents=[] or a name list simulates real entries."""
+        self.name = full_name.split("/")[-1]
+        self.clone_url = f"https://github.com/{full_name}.git"
+        self.html_url = f"https://github.com/{full_name}"
+        self._contents = contents
+
+    def get_contents(self, path: str):
+        from github import GithubException
+
+        if self._contents is None:
+            raise GithubException(404, {"message": "This repository is empty."}, {})
+        return [FakeContentEntry(n) for n in self._contents]
+
+    def get_branch(self, _name):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(edit_protection=lambda **kwargs: None)
+
+
+class FakeGithubClientWithGetRepo(FakeGithubClient):
+    """Extends the base fake with gh.get_repo(full_name) for the
+    existing-repo-linking path — separate from FakeOwner.get_repo(name),
+    which is the new-repo-already-exists fallback."""
+
+    repos_by_full_name: dict[str, FakeExistingRepo] = {}
+
+    def get_repo(self, full_name: str):
+        return self.repos_by_full_name[full_name]
+
+
+def _cfg_with_github_and_ignore_patterns(patterns: list[str] | None = None) -> AppConfig:
+    kwargs = dict(
+        databricks_host="https://test.cloud.databricks.com",
+        databricks_token="dapi-test",
+        warehouse_id="wh123",
+        github_token="ghp-test",
+        github_org="",
+    )
+    if patterns is not None:
+        kwargs["empty_repo_ignore_patterns"] = patterns
+    return AppConfig(**kwargs)
+
+
+class TestExistingRepoLinking:
+    """Owner request 2026-07-13: Step 1 may link an existing repo instead of
+    creating a new one. The app must verify it's empty (modulo configured
+    ignore patterns) before ever pushing into it."""
+
+    def test_rejects_unrecognized_url(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("github.Github", FakeGithubClient)
+        gen = ProjectInfrastructureGenerator(_cfg_with_github_and_ignore_patterns())
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo(
+            "churn_model",
+            "owner@example.com",
+            tmp_path,
+            _responses(existing_repo_url="git@github.com:org/repo.git"),
+            result,
+        )
+
+        assert result.steps[0]["status"] == "failed"
+        assert "recognized" in result.steps[0]["detail"]
+
+    def test_pushes_into_truly_empty_existing_repo(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("github.Github", FakeGithubClientWithGetRepo)
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: None)
+        FakeGithubClientWithGetRepo.repos_by_full_name = {
+            "my-org/churn-model": FakeExistingRepo("my-org/churn-model", contents=None)
+        }
+        gen = ProjectInfrastructureGenerator(_cfg_with_github_and_ignore_patterns())
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo(
+            "churn_model",
+            "owner@example.com",
+            tmp_path,
+            _responses(existing_repo_url="https://github.com/my-org/churn-model"),
+            result,
+        )
+
+        assert result.steps[0]["status"] == "ok"
+        assert result.github_repo_url == "https://github.com/my-org/churn-model"
+
+    def test_pushes_when_only_ignored_files_present(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("github.Github", FakeGithubClientWithGetRepo)
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: None)
+        FakeGithubClientWithGetRepo.repos_by_full_name = {
+            "my-org/churn-model": FakeExistingRepo(
+                "my-org/churn-model", contents=["README.md", ".gitignore", "LICENSE", ".github"]
+            )
+        }
+        gen = ProjectInfrastructureGenerator(_cfg_with_github_and_ignore_patterns())
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo(
+            "churn_model",
+            "owner@example.com",
+            tmp_path,
+            _responses(existing_repo_url="https://github.com/my-org/churn-model"),
+            result,
+        )
+
+        assert result.steps[0]["status"] == "ok"
+
+    def test_blocks_push_when_real_content_present(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("github.Github", FakeGithubClientWithGetRepo)
+        push_calls = []
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: push_calls.append(a) or None)
+        FakeGithubClientWithGetRepo.repos_by_full_name = {
+            "my-org/churn-model": FakeExistingRepo("my-org/churn-model", contents=["README.md", "src"])
+        }
+        gen = ProjectInfrastructureGenerator(_cfg_with_github_and_ignore_patterns())
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo(
+            "churn_model",
+            "owner@example.com",
+            tmp_path,
+            _responses(existing_repo_url="https://github.com/my-org/churn-model"),
+            result,
+        )
+
+        assert result.steps[0]["status"] == "failed"
+        assert "not empty" in result.steps[0]["detail"]
+        assert "src" in result.steps[0]["detail"]
+        assert push_calls == []  # never attempted a push into real content
+
+    def test_ignore_patterns_are_configurable(self, monkeypatch, tmp_path):
+        """A company-specific automation-stamped file (e.g. SECURITY.md) can
+        be added to the ignore list via app config."""
+        monkeypatch.setattr("github.Github", FakeGithubClientWithGetRepo)
+        monkeypatch.setattr("services.generator_service.subprocess.run", lambda *a, **k: None)
+        FakeGithubClientWithGetRepo.repos_by_full_name = {
+            "my-org/churn-model": FakeExistingRepo("my-org/churn-model", contents=["SECURITY.md"])
+        }
+        cfg = _cfg_with_github_and_ignore_patterns(["SECURITY.md"])
+        gen = ProjectInfrastructureGenerator(cfg)
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_github_repo(
+            "churn_model",
+            "owner@example.com",
+            tmp_path,
+            _responses(existing_repo_url="https://github.com/my-org/churn-model"),
+            result,
+        )
+
+        assert result.steps[0]["status"] == "ok"
+
     def test_generate_runs_github_step_without_org(self, monkeypatch, tmp_path):
         """generate()'s gate on the GitHub step no longer requires github_org."""
         monkeypatch.setattr("github.Github", FakeGithubClient)
@@ -306,3 +595,105 @@ class TestGithubRepoOwnerResolution:
 
         github_step = next(s for s in result.steps if s["name"] == "github_repo")
         assert github_step["status"] == "ok"
+
+
+class FakeSchemasAPI:
+    def __init__(self):
+        self.create_calls: list[dict] = []
+
+    def create(self, catalog_name, name):
+        self.create_calls.append({"catalog_name": catalog_name, "name": name})
+
+
+class FakeVolumesAPI:
+    def __init__(self):
+        self.create_calls: list[dict] = []
+
+    def create(self, catalog_name, schema_name, name, volume_type):
+        self.create_calls.append(
+            {"catalog_name": catalog_name, "schema_name": schema_name, "name": name, "volume_type": volume_type}
+        )
+
+
+class FakeWorkspaceClient:
+    last_instance: FakeWorkspaceClient | None = None
+
+    def __init__(self, host=None, token=None):
+        self.schemas = FakeSchemasAPI()
+        self.volumes = FakeVolumesAPI()
+        FakeWorkspaceClient.last_instance = self
+
+
+def _cfg_with_nonprod_catalog() -> AppConfig:
+    return AppConfig(
+        databricks_host="https://test.cloud.databricks.com",
+        databricks_token="dapi-test",
+        warehouse_id="wh123",
+        projects_catalog="mlops",
+        projects_catalog_dev="mlops_non_prod",
+        projects_catalog_staging="mlops_non_prod",
+        projects_catalog_prod="mlops",
+    )
+
+
+class TestUcSchemasAndVolumes:
+    """Owner request 2026-07-13: dev/staging resolve into the configured
+    non-prod catalog via projects_catalog_for(); prod stays in the prod
+    catalog. Volumes follow the resolved non-prod schemas."""
+
+    def test_dev_and_staging_use_nonprod_catalog(self, monkeypatch):
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+        gen = ProjectInfrastructureGenerator(_cfg_with_nonprod_catalog())
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_uc_schemas("churn_model", result)
+
+        assert result.uc_schema_dev == "mlops_non_prod.churn_model_dev"
+        assert result.uc_schema_staging == "mlops_non_prod.churn_model_staging"
+        assert result.uc_schema_prod == "mlops.churn_model_prod"
+        created = {c["catalog_name"] for c in FakeWorkspaceClient.last_instance.schemas.create_calls}
+        assert created == {"mlops_non_prod", "mlops"}
+
+    def test_no_nonprod_catalog_configured_falls_back_to_single_catalog(self, monkeypatch):
+        """Backward compat: unconfigured orgs keep today's single-catalog
+        behavior, disambiguated by the _dev/_staging/_prod suffix."""
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+        cfg = AppConfig(
+            databricks_host="https://test.cloud.databricks.com",
+            databricks_token="dapi-test",
+            warehouse_id="wh123",
+            projects_catalog="mlops",
+        )
+        gen = ProjectInfrastructureGenerator(cfg)
+        result = GenerationResult(project_name="churn_model")
+
+        gen._create_uc_schemas("churn_model", result)
+
+        assert result.uc_schema_dev == "mlops.churn_model_dev"
+        assert result.uc_schema_staging == "mlops.churn_model_staging"
+        assert result.uc_schema_prod == "mlops.churn_model_prod"
+
+    def test_volumes_created_for_dev_and_staging_only(self, monkeypatch):
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+        gen = ProjectInfrastructureGenerator(_cfg_with_nonprod_catalog())
+        result = GenerationResult(project_name="churn_model")
+        gen._create_uc_schemas("churn_model", result)
+
+        gen._create_uc_volumes(result)
+
+        assert result.uc_volume_dev == "mlops_non_prod.churn_model_dev.artifacts"
+        assert result.uc_volume_staging == "mlops_non_prod.churn_model_staging.artifacts"
+        calls = FakeWorkspaceClient.last_instance.volumes.create_calls
+        assert len(calls) == 2
+        assert {c["schema_name"] for c in calls} == {"churn_model_dev", "churn_model_staging"}
+        assert all(c["name"] == "artifacts" for c in calls)
+
+    def test_volumes_skipped_when_no_schemas_set(self, monkeypatch):
+        monkeypatch.setattr("databricks.sdk.WorkspaceClient", FakeWorkspaceClient)
+        gen = ProjectInfrastructureGenerator(_cfg_with_nonprod_catalog())
+        result = GenerationResult(project_name="churn_model")  # schemas never created
+
+        gen._create_uc_volumes(result)
+
+        volumes_step = next(s for s in result.steps if s["name"] == "uc_volumes")
+        assert volumes_step["status"] == "skipped"
