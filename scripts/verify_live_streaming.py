@@ -34,7 +34,7 @@ def main() -> int:
 
     from databricks.sdk import WorkspaceClient
 
-    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
+    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token, auth_type="pat")
 
     # §9.4 boundary: the governed source must already exist — never authored here
     try:

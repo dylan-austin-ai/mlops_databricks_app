@@ -36,7 +36,9 @@ class VolumeArtifactService:
         if self._ws_client is None:
             from databricks.sdk import WorkspaceClient
 
-            self._ws_client = WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token)
+            self._ws_client = WorkspaceClient(
+                host=self._cfg.databricks_host, token=self._cfg.databricks_token, auth_type="pat"
+            )
         return self._ws_client
 
     def save_artifact(self, volume_path: str, sub_path: str, content: bytes) -> str:

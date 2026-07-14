@@ -71,6 +71,7 @@ class BudgetPolicyService:
             account_id=self._cfg.databricks_account_id,
             client_id=self._cfg.databricks_account_client_id,
             client_secret=self._cfg.databricks_account_client_secret,
+            auth_type="oauth-m2m",
         )
 
     # ── lookup / idempotent create ───────────────────────────────────────────

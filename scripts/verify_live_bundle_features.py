@@ -175,7 +175,7 @@ def main() -> int:
     from databricks.sdk.service.jobs import JobEnvironment, SparkPythonTask, SubmitTask
     from databricks.sdk.service.workspace import ImportFormat
 
-    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
+    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token, auth_type="pat")
 
     print(f"uploading probe sources to {PROBE_DIR} ...")
     ws.workspace.mkdirs(PROBE_DIR)

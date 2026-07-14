@@ -18,7 +18,7 @@ class FakeFilesAPI:
 
 
 class FakeWorkspaceClient:
-    def __init__(self, host=None, token=None):
+    def __init__(self, host=None, token=None, **kwargs):
         self.files = FakeFilesAPI()
 
 

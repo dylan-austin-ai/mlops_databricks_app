@@ -85,7 +85,7 @@ def run_setup(catalog: str | None = None, schema: str | None = None) -> None:
 
     from databricks.sdk import WorkspaceClient
 
-    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
+    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token, auth_type="pat")
 
     # Create catalog and schema first — tables can't exist without them.
     # Default Storage workspaces reject plain CREATE CATALOG via SQL/API;

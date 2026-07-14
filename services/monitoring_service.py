@@ -64,7 +64,7 @@ class MonitoringService:
             return self._ws_override
         from databricks.sdk import WorkspaceClient
 
-        return WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token)
+        return WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token, auth_type="pat")
 
     # ── attach / read / upgrade / detach ─────────────────────────────────────
 

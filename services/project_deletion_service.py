@@ -199,7 +199,7 @@ class ProjectDeletionService:
             try:
                 from databricks.sdk import WorkspaceClient
 
-                ws = WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token)
+                ws = WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token, auth_type="pat")
                 ws.secrets.delete_scope(scope=secret_scope_name)
                 result.add_step("secret_scope", "ok", f"deleted: {secret_scope_name}")
             except Exception as exc:

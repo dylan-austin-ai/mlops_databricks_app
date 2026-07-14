@@ -180,7 +180,7 @@ def main() -> int:
     cfg = get_config()
     from databricks.sdk import WorkspaceClient
 
-    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
+    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token, auth_type="pat")
 
     ensure_secrets(ws, cfg)
     workspace_path = ensure_app(ws, args.app_name)

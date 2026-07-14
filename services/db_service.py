@@ -29,6 +29,7 @@ class DbService:
             self._ws = WorkspaceClient(
                 host=self._cfg.databricks_host,
                 token=self._cfg.databricks_token,
+                auth_type="pat",
             )
         return self._ws
 

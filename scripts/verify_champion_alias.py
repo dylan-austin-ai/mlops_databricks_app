@@ -41,7 +41,7 @@ def main() -> int:
     from mlflow.models import ModelSignature
     from mlflow.types import ColSpec, Schema
 
-    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
+    ws = WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token, auth_type="pat")
 
     mlflow.set_tracking_uri("databricks")
     mlflow.set_registry_uri("databricks-uc")

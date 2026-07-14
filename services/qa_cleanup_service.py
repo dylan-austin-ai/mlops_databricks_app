@@ -42,7 +42,9 @@ class QaCleanupService:
         if self._ws is None:
             from databricks.sdk import WorkspaceClient
 
-            self._ws = WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token)
+            self._ws = WorkspaceClient(
+                host=self._cfg.databricks_host, token=self._cfg.databricks_token, auth_type="pat"
+            )
         return self._ws
 
     def _bundle_managed_endpoint_names(self, project_name: str) -> set[str]:

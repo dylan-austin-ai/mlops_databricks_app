@@ -361,7 +361,7 @@ def cleanup_tables(ws: WorkspaceClient) -> None:
 
 
 def main() -> None:
-    ws = WorkspaceClient(host=os.environ["DATABRICKS_HOST"], token=os.environ["DATABRICKS_TOKEN"])
+    ws = WorkspaceClient(host=os.environ["DATABRICKS_HOST"], token=os.environ["DATABRICKS_TOKEN"], auth_type="pat")
     cleanup_endpoints(ws)
     cleanup_tables(ws)
 
@@ -661,6 +661,7 @@ if __name__ == "__main__":
             ws = WorkspaceClient(
                 host=self._cfg.databricks_host,
                 token=self._cfg.databricks_token,
+                auth_type="pat",
             )
 
             schemas = {
@@ -707,6 +708,7 @@ if __name__ == "__main__":
             ws = WorkspaceClient(
                 host=self._cfg.databricks_host,
                 token=self._cfg.databricks_token,
+                auth_type="pat",
             )
 
             created: list[str] = []
@@ -752,6 +754,7 @@ if __name__ == "__main__":
             ws = WorkspaceClient(
                 host=self._cfg.databricks_host,
                 token=self._cfg.databricks_token,
+                auth_type="pat",
             )
             ws.workspace.mkdirs("/Shared/mlops")
 
@@ -776,6 +779,7 @@ if __name__ == "__main__":
             ws = WorkspaceClient(
                 host=self._cfg.databricks_host,
                 token=self._cfg.databricks_token,
+                auth_type="pat",
             )
 
             scope_name = f"mlops-{project_name}"

@@ -618,7 +618,7 @@ class FakeVolumesAPI:
 class FakeWorkspaceClient:
     last_instance: FakeWorkspaceClient | None = None
 
-    def __init__(self, host=None, token=None):
+    def __init__(self, host=None, token=None, **kwargs):
         self.schemas = FakeSchemasAPI()
         self.volumes = FakeVolumesAPI()
         FakeWorkspaceClient.last_instance = self

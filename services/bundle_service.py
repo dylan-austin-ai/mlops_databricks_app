@@ -419,7 +419,7 @@ class BundleService:
 
         from databricks.sdk import WorkspaceClient
 
-        ws = WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token)
+        ws = WorkspaceClient(host=self._cfg.databricks_host, token=self._cfg.databricks_token, auth_type="pat")
 
         checks: list[VerificationResult] = []
         resources = summary.get("resources", {})

@@ -938,6 +938,44 @@ built in this and the prior continuation (progressive provisioning, drift
 guard, stale-file flagging, data versioning, QA cleanup, project deletion,
 Volume artifacts, Activity Log).
 
+**Same session, continued — real bug found on first live use of the hosted
+app.** Owner opened the freshly-deployed app and hit `Could not load
+projects: validate: more than one authorization method configured: oauth
+and pat` on the landing page (`app.py`'s `list_projects()` call). Root
+cause, confirmed via the SDK's own source
+(`databricks/sdk/config.py::Config._validate()`): Databricks Apps hosting
+auto-injects `DATABRICKS_CLIENT_ID` into every app's runtime as the
+platform's own app identity — this app's code explicitly constructs
+`WorkspaceClient(host=, token=)` (PAT auth), but the SDK's config
+validator scans *every* recognized env var present in the process
+regardless of what was explicitly passed to the constructor, sees both a
+`pat`-tagged attribute (`DATABRICKS_TOKEN`) and an `oauth`-tagged one
+(`DATABRICKS_CLIENT_ID`) with no explicit `auth_type` preference, and
+refuses ambiguously. Never surfaced before because `DATABRICKS_CLIENT_ID`
+is never set when running locally — this was the first time the app
+actually ran inside Apps hosting with real traffic hitting it.
+
+Reproduced locally first (set `DATABRICKS_CLIENT_ID` to a fake value,
+confirmed the identical error text; added `auth_type="pat"` to the same
+call, confirmed a real `ws.current_user.me()` call then succeeded) before
+touching anything, per this project's own verify-before-fixing convention.
+Fixed by adding `auth_type="pat"` (or `"oauth-m2m"` for the one genuinely
+OAuth call, `BudgetPolicyService`'s `AccountClient`) to every
+`WorkspaceClient`/`AccountClient` construction in the app's own runtime
+path — 19 call sites across `services/`, `scripts/`, and `db/setup.py`.
+One deliberately left unfixed: a bare `WorkspaceClient()` inside a
+generated probe script that runs on a submitted Databricks *job* cluster,
+not in this app's own process — a different auth context where forcing
+`auth_type="pat"` without an explicit token would be wrong, not a fix.
+Two test doubles (`FakeWorkspaceClient` in `test_generator_service.py` and
+`test_volume_artifact_service.py`) needed a `**kwargs` signature update to
+tolerate the new constructor kwarg — caught immediately by the full test
+suite, not discovered live. **476 tests passing.** Redeployed via
+`scripts/deploy_app.py` — clean one-shot deploy this time (the polling
+robustness fix from the previous deployment issue meant no manual
+intervention needed), app confirmed `RUNNING` with `ACTIVE` compute
+afterward.
+
 ---
 
 ## Known gaps / next work
