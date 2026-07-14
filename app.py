@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from components.demo import get_state_service, is_demo_active, render_pending_popup
 from components.theme import apply_theme, page_header, pill, render_sidebar
 from config import get_config
 
@@ -18,6 +19,7 @@ apply_theme()
 
 def _home() -> None:
     render_sidebar()
+    render_pending_popup()
 
     cfg = get_config()
 
@@ -30,7 +32,7 @@ def _home() -> None:
         unsafe_allow_html=True,
     )
 
-    if not cfg.is_connected:
+    if not cfg.is_connected and not is_demo_active():
         st.warning(
             "**Not connected to Databricks.** "
             "Set `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, and `DATABRICKS_WAREHOUSE_ID` "
@@ -44,12 +46,13 @@ def _home() -> None:
             )
         return
 
+    if is_demo_active():
+        st.info("🎬 **Demo Mode** — you're viewing simulated data. No Databricks connection is used.", icon="🎬")
+
     st.markdown("---")
 
     try:
-        from services.state_service import StateService
-
-        svc = StateService()
+        svc = get_state_service()
         projects = svc.list_projects()
 
         by_status: dict[str, int] = {}

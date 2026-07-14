@@ -17,6 +17,16 @@ import re
 
 import streamlit as st
 
+from components.demo import (
+    get_ai_service,
+    get_bundle_commit_service,
+    get_db_service,
+    get_provisioning_service,
+    get_state_service,
+    is_demo_active,
+    queue_action,
+    render_pending_popup,
+)
 from components.theme import apply_theme, page_header, render_sidebar, wizard_steps
 from config import get_config
 from services import interview_service as iv
@@ -282,7 +292,7 @@ def _commit_step_files_if_applicable(step: int, step_data: dict) -> None:
     a commit failure here is surfaced but never blocks wizard progress; the
     drift guard (BundleCommitService) protects any file the DS has already
     hand-edited from being silently overwritten."""
-    from services.bundle_commit_service import STEP_CANDIDATE_FILES, BundleCommitService
+    from services.bundle_commit_service import STEP_CANDIDATE_FILES
 
     if step not in STEP_CANDIDATE_FILES:
         return
@@ -298,7 +308,7 @@ def _commit_step_files_if_applicable(step: int, step_data: dict) -> None:
     s1 = iv.get_step_data(st.session_state, 1)
     all_responses = iv.get_all_responses(st.session_state)
     try:
-        results = BundleCommitService(get_config()).commit_step_files(
+        results = get_bundle_commit_service().commit_step_files(
             project_id,
             repo_full_name,
             step,
@@ -345,9 +355,7 @@ def _snapshot_training_data_if_applicable(step: int, step_data: dict) -> None:
     if not project_id:
         return
 
-    from services.state_service import StateService
-
-    state = StateService(get_config())
+    state = get_state_service()
     uc_schemas_action = state.get_last_infrastructure_action(project_id, "uc_schemas")
     dest_schema = uc_schemas_action["resource_id"] if uc_schemas_action else ""
     if not dest_schema:
@@ -357,7 +365,7 @@ def _snapshot_training_data_if_applicable(step: int, step_data: dict) -> None:
     try:
         from services.data_versioning_service import DataVersioningService
 
-        results = DataVersioningService(get_config(), state=state).snapshot_all(
+        results = DataVersioningService(get_config(), db=get_db_service(), state=state).snapshot_all(
             project_id, training_datasets, dest_schema, s1.get("owner_email", "")
         )
         ok = [r for r in results if "snapshot_table" in r]
@@ -403,9 +411,7 @@ def _validation_box(errors: list[str]) -> None:
 
 
 def _step1_provisioning_service():
-    from services.project_provisioning_service import ProjectProvisioningService
-
-    return ProjectProvisioningService(get_config())
+    return get_provisioning_service()
 
 
 def _step1() -> None:
@@ -476,10 +482,8 @@ def _step1() -> None:
     # Load teams from installation config; fall back to free text on connection failure
     _org_teams: list[str] = []
     try:
-        from services.db_service import DbService
-
-        if get_config().is_connected:
-            _org_teams = DbService().get_org_teams()
+        if get_config().is_connected or is_demo_active():
+            _org_teams = get_db_service().get_org_teams()
     except Exception:
         pass
 
@@ -578,9 +582,7 @@ def _step1_nav(errors: list[str], data: dict) -> None:
 
             with st.spinner("Provisioning project infrastructure..."):
                 try:
-                    from services.state_service import StateService
-
-                    state = StateService(get_config())
+                    state = get_state_service()
                     project_id = st.session_state.get("current_project_id")
                     if not project_id:
                         project_id = state.create_project(
@@ -870,9 +872,7 @@ def _step3() -> None:
             if first_table:
                 with st.spinner(f"Querying `{first_table}`..."):
                     try:
-                        from services.db_service import DbService
-
-                        cols = DbService().infer_table_schema(first_table)
+                        cols = get_db_service().infer_table_schema(first_table)
                         st.session_state["step3_inferred_columns"] = [c["name"] for c in cols]
                         st.session_state["step3_inferred_types"] = {c["name"]: c["data_type"] for c in cols}
                         inferred_cols = st.session_state["step3_inferred_columns"]
@@ -898,45 +898,64 @@ def _step3() -> None:
             first_table = training_datasets[0] if training_datasets else ""
             if first_table:
                 with st.spinner(f"Profiling `{first_table}`..."):
-                    try:
-                        from services.data_profiling_service import DataProfilingService
-
-                        profiler = DataProfilingService()
-                        if inferred_cols:
-                            st.session_state["step3_quick_stats"] = profiler.quick_stats(first_table, inferred_cols)
-                        result = profiler.full_profile(first_table)
-                        st.session_state["step3_full_profile_html"] = result.html
+                    if is_demo_active():
+                        st.session_state["step3_quick_stats"] = {}
+                        st.session_state["step3_full_profile_html"] = (
+                            f"<html><body><h2>(Demo) Data Profile</h2><p>Simulated profile for "
+                            f"<code>{first_table}</code>.</p></body></html>"
+                        )
                         st.session_state["step3_profile_summary"] = {
-                            "row_count": result.row_count,
-                            "column_count": result.column_count,
-                            "missing_cells_pct": result.missing_cells_pct,
-                            "duplicate_rows_pct": result.duplicate_rows_pct,
+                            "row_count": 12_480,
+                            "column_count": len(inferred_cols) or 9,
+                            "missing_cells_pct": 2.3,
+                            "duplicate_rows_pct": 0.4,
                         }
                         st.session_state.pop("step3_profile_error", None)
+                        queue_action(
+                            "Data Profiling",
+                            f"Would sample `{first_table}`, generate a full profiling report, and save "
+                            "it to the project's Volume.",
+                        )
+                    else:
+                        try:
+                            from services.data_profiling_service import DataProfilingService
 
-                        # Owner request 2026-07-13 (A): auto-save to the
-                        # project's Volume the moment it's generated, not
-                        # just offered as a download -- best-effort, never
-                        # blocks the profiling result itself.
-                        project_id = st.session_state.get("current_project_id")
-                        if project_id:
-                            try:
-                                from services.state_service import StateService
-                                from services.volume_artifact_service import VolumeArtifactService
+                            profiler = DataProfilingService()
+                            if inferred_cols:
+                                st.session_state["step3_quick_stats"] = profiler.quick_stats(first_table, inferred_cols)
+                            result = profiler.full_profile(first_table)
+                            st.session_state["step3_full_profile_html"] = result.html
+                            st.session_state["step3_profile_summary"] = {
+                                "row_count": result.row_count,
+                                "column_count": result.column_count,
+                                "missing_cells_pct": result.missing_cells_pct,
+                                "duplicate_rows_pct": result.duplicate_rows_pct,
+                            }
+                            st.session_state.pop("step3_profile_error", None)
 
-                                vol_action = StateService(get_config()).get_last_infrastructure_action(
-                                    project_id, "uc_volumes"
-                                )
-                                volume_path = vol_action["resource_id"] if vol_action else ""
-                                if volume_path:
-                                    saved_path = VolumeArtifactService().save_profile_report(
-                                        volume_path, first_table, result.html
+                            # Owner request 2026-07-13 (A): auto-save to the
+                            # project's Volume the moment it's generated, not
+                            # just offered as a download -- best-effort, never
+                            # blocks the profiling result itself.
+                            project_id = st.session_state.get("current_project_id")
+                            if project_id:
+                                try:
+                                    from services.state_service import StateService
+                                    from services.volume_artifact_service import VolumeArtifactService
+
+                                    vol_action = StateService(get_config()).get_last_infrastructure_action(
+                                        project_id, "uc_volumes"
                                     )
-                                    st.toast(f"Profile report saved to {saved_path}", icon="📦")
-                            except Exception as exc:
-                                st.toast(f"Could not save profile report to Volume: {exc}", icon="⚠️")
-                    except Exception as exc:
-                        st.session_state["step3_profile_error"] = str(exc)
+                                    volume_path = vol_action["resource_id"] if vol_action else ""
+                                    if volume_path:
+                                        saved_path = VolumeArtifactService().save_profile_report(
+                                            volume_path, first_table, result.html
+                                        )
+                                        st.toast(f"Profile report saved to {saved_path}", icon="📦")
+                                except Exception as exc:
+                                    st.toast(f"Could not save profile report to Volume: {exc}", icon="⚠️")
+                        except Exception as exc:
+                            st.session_state["step3_profile_error"] = str(exc)
     with profile_status:
         summary = st.session_state.get("step3_profile_summary")
         if summary:
@@ -1086,9 +1105,7 @@ def _step3() -> None:
             if st.button("🔍 Scan columns for sensitivity"):
                 with st.spinner("Classifying columns via LLM..."):
                     try:
-                        from services.ai_service import AiService
-
-                        ai = AiService()
+                        ai = get_ai_service()
                         scan_result = ai._chat(
                             system=(
                                 "You are a data governance expert. Classify each column name as "
@@ -1219,9 +1236,7 @@ def _step3() -> None:
             ):
                 with st.spinner("Checking columns for PII..."):
                     try:
-                        from services.ai_service import AiService
-
-                        results = AiService().check_pii(feature_columns)
+                        results = get_ai_service().check_pii(feature_columns)
                         st.session_state["step3_pii_results"] = results
                         # Auto-suggest any high-confidence flags
                         suggested = [r["column"] for r in results if r.get("is_pii") and r.get("confidence") != "low"]
@@ -1525,9 +1540,7 @@ def _step4() -> None:
                     try:
                         import json as _json
 
-                        from services.ai_service import AiService
-
-                        ai = AiService()
+                        ai = get_ai_service()
                         scan = ai._chat(
                             system=(
                                 "You are a fairness and bias expert. Given a list of feature column names "
@@ -2534,7 +2547,7 @@ def _create_project(all_responses: dict, s1: dict) -> None:
     is somehow missing — normal flow never hits that branch."""
     cfg = get_config()
 
-    if not cfg.is_connected:
+    if not cfg.is_connected and not is_demo_active():
         st.error("Not connected to Databricks. Check your environment variables.", icon="❌")
         return
 
@@ -2543,9 +2556,7 @@ def _create_project(all_responses: dict, s1: dict) -> None:
 
     with st.spinner("Finalizing project..."):
         try:
-            from services.state_service import StateService
-
-            svc = StateService()
+            svc = get_state_service()
 
             project_id = st.session_state.get("current_project_id")
             fallback_steps: list[dict] = []
@@ -2577,20 +2588,27 @@ def _create_project(all_responses: dict, s1: dict) -> None:
 
             # §20.1: record tier + packs on the project row (audited); sync
             # keeps mlops.policy_packs consistent with the YAML source of truth
-            try:
-                from services.policy_pack_service import PolicyPackService
-
-                policy = PolicyPackService(state=svc)
-                policy.sync_packs()
-                policy.assign_to_project(
-                    project_id,
-                    risk_tier=all_responses.get("risk_tier", ""),
-                    pack_ids=all_responses.get("applied_policy_packs", []),
-                    justification=all_responses.get("risk_tier_justification", ""),
-                    actor_email=owner_email,
+            if is_demo_active():
+                queue_action(
+                    "Policy Packs",
+                    "Would sync org policy packs and assign risk tier "
+                    f"`{all_responses.get('risk_tier') or '—'}` to this project.",
                 )
-            except Exception as exc:
-                st.warning(f"Risk tier could not be recorded: {exc}", icon="⚠️")
+            else:
+                try:
+                    from services.policy_pack_service import PolicyPackService
+
+                    policy = PolicyPackService(state=svc)
+                    policy.sync_packs()
+                    policy.assign_to_project(
+                        project_id,
+                        risk_tier=all_responses.get("risk_tier", ""),
+                        pack_ids=all_responses.get("applied_policy_packs", []),
+                        justification=all_responses.get("risk_tier_justification", ""),
+                        actor_email=owner_email,
+                    )
+                except Exception as exc:
+                    st.warning(f"Risk tier could not be recorded: {exc}", icon="⚠️")
 
             # §17.3: budget_alerts config, if the owner opted in on step 6
             if all_responses.get("budget_alerts_enabled"):
@@ -2672,9 +2690,7 @@ def _render_activity_log() -> None:
     if not project_id:
         return
     try:
-        from services.state_service import StateService
-
-        actions = StateService(get_config()).list_infrastructure_actions(project_id)
+        actions = get_state_service().list_infrastructure_actions(project_id)
     except Exception:
         return  # never let a log-fetch failure break the wizard
     if not actions:
@@ -2720,6 +2736,7 @@ render_sidebar(
         + "</div>"
     )
 )
+render_pending_popup()
 _render_activity_log()
 
 _STEP_RENDERERS = {

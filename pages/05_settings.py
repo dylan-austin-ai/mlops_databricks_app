@@ -6,6 +6,7 @@ import json
 
 import streamlit as st
 
+from components.demo import enter_demo_mode, is_demo_active
 from components.theme import apply_theme, page_header, render_sidebar
 from config import get_config
 
@@ -382,7 +383,23 @@ def _main() -> None:
 
     cfg_app = get_config()
     if not cfg_app.is_connected:
-        st.warning("Connect to Databricks to manage settings.", icon="⚠️")
+        if is_demo_active():
+            st.info(
+                "🎬 Demo Mode is active. Open **New Project** from the sidebar to click through the wizard.",
+                icon="🎬",
+            )
+        else:
+            st.warning("Connect to Databricks to manage settings.", icon="⚠️")
+            st.markdown("---")
+            st.markdown(
+                "**Want to see what this app does without connecting anything?** Demo Mode lets you "
+                "click through the New Project wizard and Project Dashboard with simulated data — no "
+                "config, tokens, or permissions needed. Every action that would normally create "
+                "something instead shows you what it would have done."
+            )
+            if st.button("🎬 Try Demo Mode", type="primary"):
+                enter_demo_mode()
+                st.rerun()
         return
 
     try:

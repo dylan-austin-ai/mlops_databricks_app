@@ -840,3 +840,7 @@ def render_sidebar(extra_html: str = "") -> None:
             conn_badge(cfg.databricks_host, cfg.catalog, cfg.is_connected),
             unsafe_allow_html=True,
         )
+
+        from components.demo import render_demo_banner
+
+        render_demo_banner()

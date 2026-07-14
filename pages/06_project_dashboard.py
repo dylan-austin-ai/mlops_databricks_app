@@ -6,6 +6,14 @@ import json
 
 import streamlit as st
 
+from components.demo import (
+    get_ai_service,
+    get_db_service,
+    get_state_service,
+    is_demo_active,
+    queue_action,
+    render_pending_popup,
+)
 from components.theme import apply_theme, kv_row, page_header, path_chip, pill, render_sidebar
 from config import get_config
 
@@ -68,31 +76,37 @@ def _overview_tab(project: dict, config: dict | None) -> None:
                     "project's Volume."
                 ),
             ):
-                with st.spinner("Snapshotting..."):
-                    try:
-                        import re as _re
+                if is_demo_active():
+                    queue_action(
+                        "EDA Snapshot",
+                        f"Would read `src/eda.py` from {project['github_repo_url']} and write a "
+                        f"timestamped snapshot into {project.get('uc_schema_dev', '')}.artifacts.",
+                    )
+                else:
+                    with st.spinner("Snapshotting..."):
+                        try:
+                            import re as _re
 
-                        from services.state_service import StateService
-                        from services.volume_artifact_service import VolumeArtifactService
+                            from services.volume_artifact_service import VolumeArtifactService
 
-                        match = _re.match(r"^https://github\.com/([^/]+)/([^/]+)/?$", project["github_repo_url"])
-                        if not match:
-                            raise ValueError(f"Unrecognized repo URL: {project['github_repo_url']}")
-                        from github import Github
+                            match = _re.match(r"^https://github\.com/([^/]+)/([^/]+)/?$", project["github_repo_url"])
+                            if not match:
+                                raise ValueError(f"Unrecognized repo URL: {project['github_repo_url']}")
+                            from github import Github
 
-                        repo = Github(get_config().github_token).get_repo(f"{match.group(1)}/{match.group(2)}")
-                        eda_content = repo.get_contents("src/eda.py").decoded_content.decode()
+                            repo = Github(get_config().github_token).get_repo(f"{match.group(1)}/{match.group(2)}")
+                            eda_content = repo.get_contents("src/eda.py").decoded_content.decode()
 
-                        vol_action = StateService(get_config()).get_last_infrastructure_action(
-                            project["project_id"], "uc_volumes"
-                        )
-                        volume_path = vol_action["resource_id"] if vol_action else ""
-                        if not volume_path:
-                            raise ValueError("No Volume provisioned for this project yet.")
-                        saved_path = VolumeArtifactService().save_eda_snapshot(volume_path, eda_content)
-                        st.success(f"Saved to {saved_path}", icon="✅")
-                    except Exception as exc:
-                        st.error(f"Snapshot failed: {exc}", icon="❌")
+                            vol_action = get_state_service().get_last_infrastructure_action(
+                                project["project_id"], "uc_volumes"
+                            )
+                            volume_path = vol_action["resource_id"] if vol_action else ""
+                            if not volume_path:
+                                raise ValueError("No Volume provisioned for this project yet.")
+                            saved_path = VolumeArtifactService().save_eda_snapshot(volume_path, eda_content)
+                            st.success(f"Saved to {saved_path}", icon="✅")
+                        except Exception as exc:
+                            st.error(f"Snapshot failed: {exc}", icon="❌")
 
     with col_right:
         st.markdown(
@@ -126,24 +140,33 @@ def _overview_tab(project: dict, config: dict | None) -> None:
                 "this project — the same reaper deploy_prod.yml runs automatically before every prod deploy."
             ),
         ):
-            with st.spinner("Cleaning up..."):
-                try:
-                    from services.qa_cleanup_service import QaCleanupService
+            if is_demo_active():
+                queue_action(
+                    "QA Cleanup",
+                    "Would delete non-essential dev/QA endpoints and scratch tables "
+                    "(zz_/scratch_/tmp_ prefixed) for this project's dev/staging schemas.",
+                )
+            else:
+                with st.spinner("Cleaning up..."):
+                    try:
+                        from services.qa_cleanup_service import QaCleanupService
 
-                    schema_paths = [
-                        s for s in (project.get("uc_schema_dev", ""), project.get("uc_schema_staging", "")) if s
-                    ]
-                    results = QaCleanupService().cleanup_non_essential(project.get("project_name", ""), schema_paths)
-                    if not results:
-                        st.info("Nothing to clean up.", icon="✓")
-                    else:
-                        for r in results:
-                            icon = "✅" if r["status"] == "deleted" else "⚠️"
-                            st.write(
-                                f"{icon} {r['resource']}" + (f" — {r.get('detail', '')}" if r.get("detail") else "")
-                            )
-                except Exception as exc:
-                    st.error(f"Cleanup failed: {exc}", icon="❌")
+                        schema_paths = [
+                            s for s in (project.get("uc_schema_dev", ""), project.get("uc_schema_staging", "")) if s
+                        ]
+                        results = QaCleanupService().cleanup_non_essential(
+                            project.get("project_name", ""), schema_paths
+                        )
+                        if not results:
+                            st.info("Nothing to clean up.", icon="✓")
+                        else:
+                            for r in results:
+                                icon = "✅" if r["status"] == "deleted" else "⚠️"
+                                st.write(
+                                    f"{icon} {r['resource']}" + (f" — {r.get('detail', '')}" if r.get("detail") else "")
+                                )
+                    except Exception as exc:
+                        st.error(f"Cleanup failed: {exc}", icon="❌")
 
         if config:
             raw_resp = config.get("interview_responses", "{}")
@@ -183,9 +206,7 @@ def _render_activity_log(project_id: str) -> None:
     if not project_id:
         return
     try:
-        from services.state_service import StateService
-
-        actions = StateService().list_infrastructure_actions(project_id)
+        actions = get_state_service().list_infrastructure_actions(project_id)
     except Exception:
         return
     if not actions:
@@ -353,9 +374,7 @@ def _governance_tab(config: dict | None, project_id: str = "") -> None:
     # governance coverage — not just "eventually"
     if project_id:
         try:
-            from services.state_service import StateService
-
-            _state = StateService()
+            _state = get_state_service()
             flags = _state._exec(
                 f"""SELECT uc_full_name, on_due_action, status, due_since
                     FROM {_state._tbl("revalidation_flags")}
@@ -491,9 +510,7 @@ def _drift_tab(project: dict, config: dict | None) -> None:
     baseline: dict = {}
     if catalog and project_schema:
         try:
-            from services.db_service import DbService
-
-            db = DbService()
+            db = get_db_service()
             drift_data = db.get_field_drift_data(catalog, project_schema)
             baseline = db.get_baseline_stats(catalog, project_schema)
         except Exception as exc:
@@ -771,9 +788,7 @@ def _explainability_tab(project: dict, config: dict | None) -> None:
         if st.button("Generate interpretation", type="primary" if not cached_interp else "secondary"):
             with st.spinner("Generating interpretation via LLM..."):
                 try:
-                    from services.ai_service import AiService
-
-                    interp = AiService().interpret_shap(
+                    interp = get_ai_service().interpret_shap(
                         shap_values=dict(sorted_shap),
                         model_name=project_name,
                         target_variable=target_variable,
@@ -823,15 +838,13 @@ def _main() -> None:
         return
 
     cfg = get_config()
-    if not cfg.is_connected:
+    if not cfg.is_connected and not is_demo_active():
         render_sidebar()
         st.warning("Not connected to Databricks.", icon="⚠️")
         return
 
     try:
-        from services.state_service import StateService
-
-        svc = StateService()
+        svc = get_state_service()
         project = svc.get_project(project_id)
         if not project:
             render_sidebar()
@@ -844,6 +857,7 @@ def _main() -> None:
         return
 
     render_sidebar()
+    render_pending_popup()
 
     status = project.get("status", "created")
     st.markdown(
@@ -889,6 +903,10 @@ def _danger_zone(svc: object, project: dict) -> None:
     anyway (confirmed live: missing delete_repo scope)."""
     st.markdown("---")
     with st.expander("⚠️ Danger Zone"):
+        if is_demo_active():
+            st.info("Project deletion is disabled in Demo Mode.", icon="🎬")
+            return
+
         from services.project_deletion_service import ProjectDeletionError, ProjectDeletionService
 
         project_id = project["project_id"]
