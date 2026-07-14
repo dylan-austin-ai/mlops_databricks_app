@@ -9,7 +9,11 @@ A step-by-step walkthrough for setting up and using the MLOps platform on Databr
 4. [Part 3: Creating Your First Project (End-to-End Demo)](#part-3-creating-your-first-project-end-to-end-demo)
 5. [Part 4: Platform Features & Workflows](#part-4-platform-features--workflows)
 6. [Part 5: Monitoring, Approvals & Governance](#part-5-monitoring-approvals--governance)
-7. [Troubleshooting](#troubleshooting)
+7. [Part 6: Real Workflow Example (Complete Scenario)](#part-6-real-workflow-example-complete-scenario)
+8. [Part 7: Advanced Features](#part-7-advanced-features)
+9. [Part 8: Troubleshooting](#part-8-troubleshooting)
+10. [Part 9: Next Steps & Best Practices](#part-9-next-steps--best-practices)
+11. [Part 10: Support & Documentation](#part-10-support--documentation)
 
 ---
 
@@ -31,6 +35,28 @@ Before you start, ensure you have:
 ---
 
 ## Part 1: Local Setup & Databricks Connection
+
+### Step 1.0: New to Databricks? Set Up a Workspace First
+
+Skip this step if you already have a Databricks workspace with Unity Catalog
+and a SQL warehouse. If you're starting completely from scratch:
+
+1. **Create an account and workspace** — [Databricks free trial](https://www.databricks.com/try-databricks)
+   or your cloud provider's Databricks offering (AWS/Azure/GCP marketplace).
+   Workspace creation takes a few minutes.
+2. **Confirm Unity Catalog is enabled** — new workspaces have it on by
+   default; check under **Catalog** in the left sidebar. If you see a
+   catalog picker, you're set. (This app creates its own catalog/schema
+   automatically on first run — you don't need to pre-create one.)
+3. **Create a SQL warehouse** — **SQL → Warehouses → Create SQL Warehouse**.
+   Any size works; this app only issues DDL and small state queries against
+   it, never large scans. A **Serverless** warehouse starts fastest.
+4. **Generate a personal access token** — profile icon (top right) →
+   **Settings → Developer → Access tokens → Generate new token**. Copy it
+   immediately; it's shown only once.
+
+You now have everything `DATABRICKS_HOST` / `DATABRICKS_TOKEN` /
+`DATABRICKS_WAREHOUSE_ID` need (Step 1.4 below).
 
 ### Step 1.1: Clone or Extract the App
 
@@ -66,67 +92,44 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-**Edit `.env` with your Databricks credentials:**
+**`.env.example` is the authoritative, fully-commented list of every config
+option** — copy it once and treat it as your reference; this section only
+calls out what's actually required to start, plus the gotchas that are easy
+to miss.
+
+**Required — the app won't connect without these three:**
 ```bash
-# Your Databricks workspace URL (no trailing slash)
 DATABRICKS_HOST=https://your-workspace.azuredatabricks.net
-
-# Personal access token from Databricks User Settings > Developer Tools
 DATABRICKS_TOKEN=dapi1234567890abcdef
-
-# SQL warehouse ID (from Databricks UI > SQL > Warehouses)
 DATABRICKS_WAREHOUSE_ID=abc123def456789
-
-# (Optional) Unity Catalog settings
-MLOPS_CATALOG=mlops              # Will be created if it doesn't exist
-MLOPS_SCHEMA=mlops               # Schema within the catalog
-
-# (Optional) GitHub for auto-repo creation
-GITHUB_TOKEN=ghp_1234567890abcdef
-GITHUB_ORG=my-org
-
-# (Optional) LLM endpoint for AI-powered suggestions
-DATABRICKS_LLM_ENDPOINT=databricks-meta-llama-3-1-70b-instruct
-
-# (Optional) Notification delivery — budget alerts, performance-degradation
-# alerts, new-approval-gate notices, and HITL SLA escalations all route
-# through these. Leave a channel unset and it reports "not_configured"
-# rather than failing — nothing crashes, it just doesn't send.
-MLOPS_SMTP_HOST=smtp.yourcompany.com
-MLOPS_SMTP_PORT=587
-MLOPS_SMTP_USER=alerts@yourcompany.com
-MLOPS_SMTP_PASSWORD=your-smtp-password
-MLOPS_SMTP_FROM_EMAIL=alerts@yourcompany.com
-MLOPS_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-MLOPS_TEAMS_WEBHOOK_URL=https://yourorg.webhook.office.com/...
-
-# (Optional) Budget Policy attribution — lets the app create/manage
-# Databricks Budget Policies so serverless usage (jobs, serving endpoints)
-# is attributed per project. These are ACCOUNT-level credentials, NOT the
-# workspace token above — a materially higher-privilege credential (an
-# account-level OAuth service principal, not a workspace PAT). Leave unset
-# to disable this feature entirely; the app degrades gracefully.
-DATABRICKS_ACCOUNT_HOST=https://accounts.azuredatabricks.net
-DATABRICKS_ACCOUNT_ID=
-DATABRICKS_ACCOUNT_CLIENT_ID=
-DATABRICKS_ACCOUNT_CLIENT_SECRET=
-MLOPS_DEFAULT_BUDGET_POLICY_ID=
-MLOPS_DEFAULT_BUDGET_POLICY_NAME=mlops-control-plane-default
 ```
 
-**A note on the account-level credentials specifically:** everything else
-in this file authenticates against your *workspace* (one Databricks
-deployment). The four `DATABRICKS_ACCOUNT_*` variables above authenticate
-against your Databricks *account* (which can span multiple workspaces) —
-whoever holds this service principal's secret has meaningfully broader
-reach than the workspace token. Treat it accordingly: a dedicated service
-principal scoped to budget-policy management only, not a shared admin
-identity.
-
-**Finding your Databricks credentials:**
+**Finding these:**
 - **Host:** Top-right corner of Databricks UI → workspace name → copy workspace URL
 - **Token:** User Settings (profile icon) → Developer Tools → Generate new token
 - **Warehouse ID:** SQL → Warehouses → click any warehouse → copy ID from URL
+
+**Everything else in `.env.example` is optional and the app degrades
+gracefully when unset** — GitHub auto-repo creation, notification delivery
+(SMTP/Slack/Teams), Budget Policy attribution, per-environment catalog
+overrides, existing-repo-linking emptiness-check patterns, and
+control-plane cost/capacity thresholds. Two things worth knowing before you
+skip past them:
+
+- **`GITHUB_TOKEN` scopes**: grant exactly `repo` and `workflow` when you
+  generate the token — **not** `delete_repo`. Confirmed live: this app
+  never deletes a GitHub repo or its contents under any circumstance, only
+  creates/updates files and (separately, for project deletion) reminds a
+  human to delete or archive it themselves. A token with `delete_repo`
+  grants nothing this app uses and is unnecessary exposure.
+- **`DATABRICKS_ACCOUNT_*` (Budget Policy attribution) are a different,
+  higher-privilege credential class than everything else** — they
+  authenticate against your Databricks *account* (which can span multiple
+  workspaces), not the single workspace the token above talks to. Use a
+  dedicated service principal scoped to budget-policy management only, not
+  a shared admin identity. Leave these four unset entirely if you don't
+  need per-project cost attribution — nothing else in the app depends on
+  them.
 
 ### Step 1.5: Initialize the Database Schema
 
@@ -170,6 +173,82 @@ External URL: http://your.external.ip:8501
 You should see the **MLOps Platform "Command Center"** with:
 - Project metrics (Total Projects: 0, In Production: 0, In Development: 0)
 - A message: "No projects yet. Create your first project."
+
+### Step 1.7: Verify Your Setup (Recommended)
+
+The fastest way to confirm everything above is actually wired correctly —
+real credentials, real permissions, real connectivity — is to build a
+complete real demo project through the app's own services, end to end:
+
+```bash
+python scripts/run_full_demo.py
+```
+
+This creates a synthetic training table, a real project with real
+infrastructure (GitHub repo, UC schemas + Volumes, MLflow experiment),
+walks it through all 7 wizard steps' worth of progressive file commits,
+profiles the data, versions it (Delta CLONE snapshot), and saves an EDA
+notebook snapshot — roughly nine stages, each printed as it completes. If
+any of your config is wrong (bad token, missing warehouse permission,
+insufficient GitHub scope), you'll find out here in under a minute rather
+than partway through your first real project in the UI.
+
+It's idempotent and safe to run more than once. When you're done looking
+at what it built, tear it down:
+
+```bash
+python scripts/run_full_demo.py --teardown --drop-demo-table
+```
+
+This removes everything it created **except the GitHub repo** — the app
+never deletes GitHub content under any circumstance (see the `GITHUB_TOKEN`
+scopes note in Step 1.4); teardown prints the repo URL as a reminder to
+delete or archive it yourself if you don't want to keep it.
+
+### Step 1.8: Deploy as a Native Databricks App (Optional)
+
+Running locally (`streamlit run app.py`) is enough to use and develop the
+app. If you want it hosted *inside* your Databricks workspace instead —
+one URL, no local process to keep running, native workspace auth — deploy
+it as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/):
+
+```bash
+python scripts/deploy_app.py
+```
+
+This is idempotent and safe to re-run any time you want to push a new code
+version — each run:
+
+1. Creates (or reuses) a workspace **secret scope** (`mlops_app_secrets`)
+   holding your `DATABRICKS_TOKEN` and `GITHUB_TOKEN`, refreshing both
+   values from your current `.env` every time — handy if a token rotated
+   since the last deploy.
+2. Creates (or reuses) the **App resource** itself, with both secrets
+   attached as read-only bindings — matches what `app.yaml` expects via its
+   `valueFrom` references.
+3. Runs `databricks sync --full`, which makes the workspace copy of this
+   repo **exactly match** your local directory — not just an incremental
+   push, a true replace.
+4. Starts the app's compute if it isn't already running, then triggers a
+   snapshot deployment and waits for it to finish.
+
+When it completes, it prints the app's live URL. First deploy typically
+takes a couple of minutes (starting compute from cold); redeploys after
+that are faster.
+
+**Customizing the app name:**
+```bash
+python scripts/deploy_app.py --app-name my-mlops-app
+```
+
+**Note on non-secret config:** `app.yaml` sets `DATABRICKS_HOST`,
+`DATABRICKS_WAREHOUSE_ID`, `MLOPS_CATALOG`, `MLOPS_SCHEMA`, and
+`GITHUB_ORG` as plain (non-secret) values — edit `app.yaml` directly if
+those differ from your `.env`. Only the two tokens flow through the secret
+scope; every other optional variable from `.env.example` (notifications,
+budget policy account credentials, per-environment catalog overrides, etc.)
+needs adding to `app.yaml`'s `env:` list the same way if you want the
+hosted app to pick it up — it does **not** read your local `.env` file.
 
 ---
 
@@ -218,21 +297,36 @@ You'll see a **7-step interview wizard**:
 └─────────────────────────────────────────┘
 ```
 
+**This isn't a "fill in 7 forms, then click Create at the end" wizard.**
+Real infrastructure gets created progressively as you go — Step 1 fires
+immediately (GitHub repo, UC schemas, MLflow experiment), and each later
+step pushes the specific generated files its own answers affect straight
+to that repo. By the time you reach Review, almost everything already
+exists; "Create Project!" there just finalizes the approved config. A
+**📋 Activity Log** panel (visible on every step once Step 1 has fired)
+shows exactly what's happened so far, in order — see §3.9 and §4.2.
+
 ### Step 3.2: Complete Step 1 — Basic Info
 
 **Fields to fill:**
 
 | Field | Example Value | Notes |
 |-------|---------------|-------|
-| **Project Name** | `credit_risk_v1` | Slug-style name (no spaces) |
-| **Problem Statement** | `Predict credit default risk for loan applications` | Plain English description |
-| **Success Metric** | `AUC > 0.85 on holdout test set` | How you'll measure success |
-| **Team Name** | `Data Science` | Which team owns this project |
-| **Owner Email** | `your-email@company.com` | Primary point of contact |
-| **Use Case Category** | `Classification` | Regression, Classification, Ranking, Forecasting |
-| **Priority** | `High` | High, Medium, Low |
+| **Model Name** | `credit_risk_v1` | Auto-corrected to lowercase + underscores as you type. Becomes your GitHub repo name and UC schema prefix — **locked after this step provisions infrastructure** (see below), since renaming afterward wouldn't rename the already-created repo/schemas. |
+| **What business problem does it solve?** | `Predict credit default risk for loan applications` | Minimum 20 characters |
+| **How do you measure success?** | `Achieve AUC-ROC >= 0.85 on holdout validation set with <10% disparity across demographic groups` | Minimum 20 characters — becomes the primary CI acceptance criterion |
+| **Team** | `Data Science` | Loaded from org config if configured; otherwise free text |
+| **Primary owner email** | `your-email@company.com` | Monitoring alerts and approval requests go here |
+| **Existing GitHub repo (optional)** | *(leave blank)* | Leave blank and the app creates a new private repo. Paste a `https://github.com/org/repo` URL to push into an existing one instead — it must be empty (a README/.gitignore/LICENSE/.github stamped in by your org's repo-creation automation is fine; anything else blocks it, configurable via `MLOPS_EMPTY_REPO_IGNORE_PATTERNS`). |
 
-**Click "Next" to continue.**
+**Click "Next →" — this is the step that actually provisions
+infrastructure.** You'll see a spinner, then a results list (✅/⏭️/⚠️ per
+action: GitHub repo, UC schemas + Volumes, MLflow experiment, Budget
+Policy), then a **"Continue →"** button. This two-phase flow is
+deliberate — you see exactly what got created before moving on, instead of
+it flashing by. Safe to revisit: going back to this step later shows the
+model name locked with a **🔒 Infrastructure already created** notice
+rather than the editable field.
 
 ### Step 3.3: Complete Step 2 — Model Specs
 
@@ -240,26 +334,36 @@ You'll see a **7-step interview wizard**:
 
 | Field | Example Value | Notes |
 |-------|---------------|-------|
-| **Inference Type** | `Real-time API` | Batch, Real-time API, Streaming |
-| **Target Latency** | `100ms` | How fast predictions need to be |
-| **Queries Per Second (QPS)** | `50` | Expected throughput |
-| **Model Framework(s)** | `XGBoost` | XGBoost, LightGBM, Random Forest, Neural Net, etc. |
-| **Primary Framework** | `XGBoost` | Which framework to start with |
-| **Retraining Frequency** | `Monthly` | How often to retrain (Hourly/Daily/Weekly/Monthly/Quarterly/Manual) |
-| **Max Model Age** | `60 days` | If model is older than this, alert |
+| **Inference type** | `Real-time` | Batch, Real-time, Both, or Streaming — each renders different generated files (e.g. real-time gets `resources/model_serving.yml`, batch/both gets `src/batch_score.py`) |
+| **Batch frequency / schedule** | *(shown for Batch/Both)* | Hourly/Daily/Weekly/Monthly/Quarterly + a cron builder |
+| **Target P95 latency (ms)** | `150` | *(shown for Real-time/Both)* — sets the Model Serving endpoint alert threshold |
+| **Target uptime %** | `99.95` | *(shown for Real-time/Both)* |
+| **Expected QPS** | `50` | *(shown for Real-time/Both)* — sizes autoscaling |
+| **Streaming source table** | `catalog.schema.table` | *(shown for Streaming)* — must already exist and be governed |
+| **Framework(s)** | `XGBoost` | Multi-select — each selected framework generates matching MLflow-flavor code |
 
 **Accelerants (optional, purely additive)** — your own `train.py` logic
 stays authoritative either way:
 - **AutoML baseline** — generates `automl_baseline.py`, a disposable first
   model via `databricks.automl.classify()`/`.regress()` (picked
   automatically based on your Step 6 performance metrics). Keep it as a
-  score to beat, or delete the file.
+  score to beat, or delete the file. **Confirmed live**: AutoML requires
+  classic Dedicated-access-mode compute and does not run on serverless-only
+  workspaces — if your workspace policy is serverless-only (check with your
+  admin), this file will render but the accelerant itself won't run there.
 - **Hyperparameter search scaffold** — generates `hyperparameter_search.py`
-  with a real Optuna trial loop and MLflow logging; the search space and
-  your model's training/scoring are left as TODOs since those are specific
-  to what you're building.
+  with a real Optuna trial loop and MLflow logging (works fine on
+  serverless — no special compute requirement); the search space and your
+  model's training/scoring are left as TODOs since those are specific to
+  what you're building.
 
-**Click "Next" to continue.**
+**Click "Next →"** — pushes the files this step's answers affect
+(`resources/model_serving.yml`, `requirements.txt`, the accelerant files,
+`src/train.py`) to your repo. If a file that used to apply (e.g.
+`src/batch_score.py`, rendered under Step 1's temporary default before you
+got here) no longer does, it's flagged in the Activity Log as needing your
+manual review — **the app never deletes a file from your repo itself**,
+only flags it.
 
 ### Step 3.4: Complete Step 3 — Data Specs
 
@@ -281,7 +385,12 @@ downloadable HTML report with distributions and correlations). Also feeds a
 default suggestion into Step 4's Data Quality Gates — a column that's
 already frequently null in the real sampled data defaults to "Acceptable"
 instead of "Required," so you're not hand-tuning defaults for columns whose
-real behavior you can already see.
+real behavior you can already see. The report is also saved automatically
+to this project's UC Volume (`profile_reports/`) the moment it's generated
+— not just offered as a download. Wide tables (10+ columns) skip the
+pairwise-interactions scatter matrix automatically to keep the report a
+reasonable size — everything else (per-column stats, correlations,
+missing-value diagrams) still renders.
 
 **Feature Catalog matches** — if a feature column you typed matches an
 existing shared feature, it's surfaced here with its owner and reuse count.
@@ -289,7 +398,14 @@ Reusing it is the default; keeping a separate ad-hoc definition instead
 requires a one-line justification, same pattern as the PII justification
 block below it.
 
-**Click "Next" to continue.**
+**Click "Next →"** — commits `src/train.py`'s data-loading section to your
+repo, and takes a **Delta CLONE snapshot** of each training dataset into
+this project's own UC schema (`training_data_snapshots` table tracks
+source table, snapshot table, source Delta version, and row count) — a
+physically independent copy that survives even if the source table is
+later modified or vacuumed, so the exact data this project trained on can
+always be faithfully reproduced. Skipped automatically on a revisit if the
+dataset list hasn't changed since the last snapshot.
 
 ### Step 3.5: Complete Step 4 — Governance
 
@@ -384,18 +500,36 @@ Define who needs to approve deployments.
 
 ### Step 3.9: Review & Create
 
-You'll see a summary of all your answers. Review for accuracy.
+You'll see a summary of all your answers, plus two lists — **"Already
+provisioned (Step 1)"** (GitHub repo, UC schemas + Volumes, MLflow
+experiment, Budget Policy — all real, created back at Step 1) and **"What
+'Create Project!' still does"** (record the final approved config version
+with its manifest hash, sync risk tier + policy packs, save the budget
+alert config). This is intentionally a much smaller list than it used to
+be — almost everything already happened progressively as you went through
+Steps 1–6.
 
-**Click "Create Project"** to finalize.
+**Click "✓ Create Project!"** to finish.
 
 **Expected output:**
 ```
-✅ Project created: credit_risk_v1
-   - Created repository on GitHub: acme-mlops/credit-risk-v1
-   - Schema prepared: mlops_projects.credit_risk_v1
-   - MLflow experiment: /Users/your-email/credit_risk_v1
-   - Deployment workflow saved
+✅ Project `credit_risk_v1` created! (ID: a1b2c3d4-...)
+Infrastructure steps (provisioned progressively as you completed the wizard):
+✅ Budget Policy — created: mlops-credit_risk_v1
+✅ Github Repo — https://github.com/acme-mlops/credit-risk-v1
+✅ Uc Schemas — mlops.credit_risk_v1_dev, mlops.credit_risk_v1_staging, mlops.credit_risk_v1_prod
+✅ Uc Volumes — mlops.credit_risk_v1_dev.artifacts, mlops.credit_risk_v1_staging.artifacts
+✅ Mlflow Experiment — /Shared/mlops/credit_risk_v1
 ```
+
+(If account-level Budget Policy credentials aren't configured, that line
+reads `⏭️ Budget Policy — Account-level credentials not configured` instead
+— the project is created fine either way, just without cost attribution.)
+
+For the full chronological record of every action taken — including each
+individual file commit and any files flagged for your manual cleanup —
+expand **📋 Activity Log** (visible on every wizard step and on the project
+dashboard afterward; see §4.2).
 
 The generated repo's `src/` folder has:
 - **`train.py`** — the job entry point the training/retraining workflow
@@ -457,6 +591,41 @@ Once your project is created, you can interact with it across multiple pages.
 - Trigger a manual retraining run
 - View detailed experiment logs
 - Download model artifacts
+
+**📋 Activity Log** — a chronological, expandable list of every
+infrastructure action the app has taken for this project: GitHub repo
+creation, UC schemas/Volumes, MLflow experiment, Budget Policy, each file
+commit (with a link back to what changed), and any file flagged
+`pending_deletion` (see §7.8). Same underlying record the wizard's own
+Activity Log shows mid-creation — this is where you look it up again
+afterward.
+
+**📸 Snapshot EDA notebook to Volume** — a manual checkpoint button. EDA
+happens in a Databricks notebook over days or weeks with no natural "done"
+signal the app can detect, so this is DS-triggered whenever you want one:
+reads the current `src/eda.py` from GitHub and writes a timestamped copy to
+the project's UC Volume (`eda_snapshots/`).
+
+**🧹 Clean up QA resources** — deletes non-essential dev/QA serving
+endpoints (anything prefixed with your project name that isn't the
+bundle's own managed endpoint) and scratch tables (only ones explicitly
+prefixed `zz_`/`scratch_`/`tmp_` — nothing else is ever touched). The same
+reaper runs automatically, best-effort, before every prod deploy; this
+button lets you run it manually any time, e.g. after a burst of
+experimentation.
+
+**⚠️ Danger Zone → project deletion** — requires MLOps approval before
+anything happens (reuses the same Approvals page every other governance
+gate uses). Once approved, deletion:
+- soft-deletes the project (status flips to `deleted`, the row itself is
+  never removed — audit trail stays intact)
+- deletes the Budget Policy and secret scope, if either was provisioned
+- **preserves all UC data** — schemas, tables, Volumes, and training-data
+  snapshots are never touched, since destroying those would defeat the
+  whole point of the Delta CLONE reproducibility snapshots (§3.4)
+- **never touches the GitHub repo** — instead lists every file currently in
+  it as a checklist for you to review and delete or archive yourself. The
+  app's GitHub token deliberately doesn't have `delete_repo` scope (§1.4).
 
 ### 4.3: Data Contracts Page
 
@@ -1178,9 +1347,46 @@ skipping it leaves every column defaulting to "Required," same as before
 this feature existed.
 
 **Requires `fg-data-profiling` installed** (`pip install -r
-requirements.txt`) — not bundled by default, and not yet `pip-audit`ed as
-of when this was built; do that before relying on it in a regulated
-environment.
+requirements.txt`) — installed and `pip-audit`ed clean as of when this was
+built. Note if you're on a newer `setuptools`: `fg-data-profiling` imports
+`pkg_resources` directly without declaring `setuptools` as a dependency,
+and `setuptools>=81` dropped that shim — `requirements.txt` pins
+`setuptools<81` for exactly this reason. If profiling fails with
+`ModuleNotFoundError: No module named 'pkg_resources'`, that pin is
+missing or got overridden.
+
+### 7.8: Progressive Provisioning, the Drift Guard, and Stale Files
+
+Covered in context throughout Part 3, collected here for reference.
+
+**Provisioning fires per-step, not all at once.** Step 1's "Next →" creates
+real infrastructure immediately (GitHub repo, UC schemas + Volumes, MLflow
+experiment, Budget Policy) — idempotent and tracked, so revisiting Step 1
+or a Streamlit rerun never re-creates anything that already succeeded.
+Steps 2–6 each push only the files their own answers affect, re-rendering
+the whole bundle locally (cheap) but committing just the relevant subset.
+
+**The changed-assumptions drift guard** protects any file you've hand-edited
+from being silently overwritten by a later step's commit. Before pushing an
+update to a previously-generated file, the app compares the file's current
+content hash in your repo against the hash recorded when it was last
+auto-generated. Match → safe to overwrite. Mismatch → you've edited it —
+the push is skipped and recorded as `blocked_drift` in the Activity Log
+instead. There's no diff-preview UI yet; if you hit this, compare the files
+yourself. (A force-regenerate path exists at the service layer for a future
+UI addition, not exposed in the wizard today.)
+
+**Stale files are flagged, never deleted.** A file can become inapplicable
+as later steps reveal more — the clearest example: Step 1's initial render
+doesn't know your `inference_type` yet (nothing has asked), so it defaults
+to `batch` and generates `src/batch_score.py`; if Step 2 then says
+`real_time`, that file no longer applies. **The app will never delete it
+for you** — instead it's flagged `pending_deletion` in the Activity Log
+with an explanation, and stays flagged until you remove the file yourself
+(or it clears automatically if a later answer makes it relevant again).
+This is the same "app creates, humans delete" principle used for GitHub
+repo deletion (§4.2) — applied at the file level instead of the whole-repo
+level.
 
 ---
 

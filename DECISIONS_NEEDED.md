@@ -6,6 +6,50 @@ note it here (or just tell the build session) — several change code paths.
 
 ---
 
+## Owner decisions 2026-07-13 (sixth session, agile provisioning) — six items decided, one gap left open
+
+Asked directly, all six answered and built the same session (see
+PROJECT_STATUS.md for full detail):
+
+1. **Non-prod catalog layout:** shared non-prod catalog, per-project schema
+   (not one shared schema for all projects) — `mlops_non_prod.{project}_dev`
+   style, each project still isolated.
+2. **Project name mutability:** locked (with a visible 🔒 indicator) once
+   Step 1's hard-to-rename resources (UC schemas/Volumes/MLflow experiment)
+   exist.
+3. **Project deletion:** requires MLOps approval (reuses the existing
+   approvals table/UI); GitHub repo deletion stays manual — the app lists
+   every file in the repo as a checklist rather than just a bare link.
+4. **"Empty repo" definition for existing-repo linking:** app config
+   (`MLOPS_EMPTY_REPO_IGNORE_PATTERNS`), not hardcoded — some orgs stamp
+   files in via repo-creation automation.
+5. **Dev/QA vs. prod deploy friction:** low-friction self-service for
+   dev/staging (`deploy_dev.yml`, no gate); friction reserved for prod
+   (`deploy_prod.yml`, gated on `scripts/check_change_scope.py`).
+6. **Stale files** (a file that was correct under an earlier default and no
+   longer applies, e.g. `src/batch_score.py` after `inference_type` changes
+   to `real_time`): **the app must never delete a file from a repo it
+   didn't just add itself** — flagged `pending_deletion` in the Activity
+   Log and left alone until a human removes it.
+
+**One gap knowingly left open, not yet decided:** `deploy_prod.yml`'s gate
+only verifies the *change-scope* side (has a substantive file changed since
+the last approved state) — it does **not** independently verify that every
+`required_approvers` entry in `.mlops/approval_record.json` has actually
+signed off for the current manifest hash. Closing that would mean the CI
+runner querying the control-plane app's own approvals database (a new
+read-only API surface, and a new credential in the project's own repo
+secrets) — not built. Today, GitHub's branch-protection PR-review
+requirement (Step 7's reviewer count) is the actual enforcement mechanism
+for the human-review side; the change-scope check is a second, independent
+signal on top of that, not a replacement for it.
+
+**If nothing:** the current split stands — PR review gates the human side,
+change-scope detection gates the CI side, and the two aren't
+cross-verified against each other.
+
+---
+
 ## Owner decisions 2026-07-12 (fifth session) — IMG_1412 triage, two items declined
 
 Two of the `IMG_1412.txt` "Not-covered items" were triaged and put to the
